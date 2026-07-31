@@ -68,7 +68,7 @@ def test_cli_validate_json_to_file_writes_no_chatter(clean_file, tmp_path, capsy
     out_path = tmp_path / "report.json"
     assert main(["validate", clean_file, "--format", "json",
                  "-o", str(out_path)]) == 0
-    doc = json.loads(out_path.read_text())
+    doc = json.loads(out_path.read_text(encoding="utf-8"))
     assert doc["exit_code"] == 0
     assert doc["summary"]["result"] == "PASS"
     # json to a file stays machine-clean on stdout (cli.py json branch)
@@ -79,7 +79,7 @@ def test_cli_validate_text_to_file_reports_the_write(clean_file, tmp_path, capsy
     out_path = tmp_path / "report.txt"
     assert main(["validate", clean_file, "-o", str(out_path)]) == 0
     assert f"wrote text report to {out_path}" in capsys.readouterr().out
-    assert out_path.read_text().startswith("Sentinel — IAMF conformance report")
+    assert out_path.read_text(encoding="utf-8").startswith("Sentinel — IAMF conformance report")
 
 
 def test_cli_validate_missing_file_is_exit_2(tmp_path, capsys):
@@ -169,6 +169,25 @@ def test_cli_batch_single_file_root(clean_file, capsys):
 def test_iter_media_filters_and_sorts(tmp_path):
     (tmp_path / "b.iamf").write_bytes(b"x")
     (tmp_path / "a.mp4").write_bytes(b"x")
-    (tmp_path / "notes.txt").write_text("not media")
+    (tmp_path / "notes.txt").write_text("not media", encoding="utf-8")
     got = [os.path.basename(p) for p in _iter_media(str(tmp_path))]
     assert got == ["a.mp4", "b.iamf"]
+
+
+def test_cli_output_files_are_utf8(clean_file, tmp_path):
+    """Named regression (doc 97b): `--output` must write UTF-8, not the
+    locale encoding.
+
+    The text report opens with "Sentinel — IAMF conformance report" and the
+    HTML report declares UTF-8 in its own header while writing middots and
+    em dashes. An unqualified text write uses `locale.getpreferredencoding()`
+    — cp1252 on Windows — so the bytes on disk contradict the charset the
+    file announces. Reading back as UTF-8 is what makes that fail loudly.
+    """
+    for fmt, ext in (("text", "txt"), ("html", "html")):
+        out = tmp_path / f"report.{ext}"
+        main(["validate", clean_file, "--format", fmt, "--output", str(out)])
+        raw = out.read_bytes()
+        assert b"\r\n" not in raw, f"{fmt} report wrote CRLF"
+        text = raw.decode("utf-8")          # raises if the write was locale-encoded
+        assert "—" in text, f"{fmt} report lost its non-ASCII content"

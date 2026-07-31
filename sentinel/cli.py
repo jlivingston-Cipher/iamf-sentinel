@@ -68,7 +68,12 @@ def _cmd_validate(args: argparse.Namespace) -> int:
                       toolchain=toolchain)
     out = render(report, args.format)
     if args.output:
-        with open(args.output, "w") as fh:
+        # UTF-8 + LF explicitly (doc 97b): the text and HTML reports carry
+        # em dashes and middots, and the HTML declares UTF-8 in its own
+        # header. An unqualified text write uses the LOCALE encoding, which
+        # is cp1252 on Windows — the bytes on disk then contradict the
+        # charset the file announces, and the report renders as mojibake.
+        with open(args.output, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(out)
         if args.format != "json":
             print(f"wrote {args.format} report to {args.output}")

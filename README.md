@@ -77,7 +77,7 @@ keeps the embedded core finding-identical to this package.
 - **The CI contract.** Stable check-ID taxonomy (`S-1xx` structural / `S-2xx` semantic / `S-3xx`
   loudness / `S-4xx` container), FAIL/WARN/INFO severities, `json | text | html` reports, and a
   declarative `generic` profile. **This is the surface you cite:** "passes iamf-sentinel `S-1xx…S-4xx`
-  at v0.3.1." (This example is version-coupled: it moves with every release.)
+  at v0.3.2." (This example is version-coupled: it moves with every release.)
 
 ## What's in the Pro plugin (`iamf-sentinel-pro`) — also free, Apache-2.0
 
