@@ -6,11 +6,12 @@ Usage:  make_inspector.py OSS_ROOT [PRO_ROOT] [-o OUT.html]
 Builds the embedded core zip directly from the D1 split trees (PLUGIN_SEAM.md):
 the OSS `sentinel` package (stdlib L1/L2 + container + descriptor checks +
 `generic` profile) plus — if PRO_ROOT is given — `profiles/youtube.toml` from
-the pro tree, embedded at `sentinel/profiles/youtube.toml` so the in-page
-profile selector keeps its `youtube` entry (doc 30's embedded surface; the
-"youtube free vs paid" D1 sub-question, doc 26, governs whether a public build
-may include it). Pro-boundary code (dsp/oracle/l3_rendered/adm_compare) is
-never embedded.
+the pro tree, embedded at `sentinel/profiles/youtube.toml` (doc 30's embedded
+surface; the "youtube free vs paid" D1 sub-question, doc 26, governs whether a
+public build may include it). The in-page profile selector is generated from
+whatever was embedded, so a public build offers only the profiles it ships.
+Pro-boundary code (dsp/oracle/l3_rendered/adm_compare) is never embedded.
+The embedded zip is byte-deterministic: same source files, same artifact.
 """
 import argparse
 import base64
@@ -36,14 +37,42 @@ ap.add_argument("pro_root", nargs="?", help="sentinel-pro tree root (for youtube
 ap.add_argument("-o", "--output", default="iamf-inspector.html")
 args = ap.parse_args()
 
+# Deterministic archive. `ZipFile.write` stamps each member with the source
+# file's mtime, which made the embedded blob a function of *when* the tree was
+# checked out rather than of what it contains: two builds of identical sources
+# differed in bytes, so a rebuild always looked like a change and the hosted
+# artifact could not be reproduced by a third party. A fixed timestamp and mode
+# make the blob a pure function of the source bytes.
+ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def add(zf, arcname, src):
+    zi = zipfile.ZipInfo(arcname, date_time=ZIP_EPOCH)
+    zi.compress_type = zipfile.ZIP_DEFLATED
+    zi.external_attr = 0o644 << 16
+    with open(src, "rb") as fh:
+        zf.writestr(zi, fh.read())
+
+
+profiles = ["generic"]
 buf = io.BytesIO()
 with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
     for rel in OSS_CORE_FILES:
-        zf.write(os.path.join(args.oss_root, rel), rel)
+        add(zf, rel, os.path.join(args.oss_root, rel))
     if args.pro_root:
-        zf.write(os.path.join(args.pro_root, "sentinel_pro/profiles/youtube.toml"),
-                 "sentinel/profiles/youtube.toml")
+        add(zf, "sentinel/profiles/youtube.toml",
+            os.path.join(args.pro_root, "sentinel_pro/profiles/youtube.toml"))
+        profiles.append("youtube")
 B64 = base64.b64encode(buf.getvalue()).decode()
+
+# The profile selector is a function of what was actually embedded. It used to
+# be hardcoded with a `youtube` entry, so a build without PRO_ROOT offered a
+# profile it did not ship: choosing it returned "unknown profile 'youtube' ...
+# platform profile packs ship with iamf-sentinel-pro", advice that cannot be
+# acted on inside a browser page.
+PROFILE_OPTIONS = "".join(
+    '<option value="{0}"{1}>{0}</option>'.format(p, " selected" if i == 0 else "")
+    for i, p in enumerate(profiles))
 PYODIDE_VERSION = "0.28.3"
 
 HTML = r"""<!DOCTYPE html>
@@ -108,7 +137,7 @@ HTML = r"""<!DOCTYPE html>
   </label>
   <div class="row">
     <span style="color:var(--dim);font-size:12px">profile</span>
-    <select id="profile"><option value="generic" selected>generic</option><option value="youtube">youtube</option></select>
+    <select id="profile">__PROFILE_OPTIONS__</select>
     <button id="revalidate" disabled>re-validate</button>
     <button id="dljson" disabled>download JSON report</button>
   </div>
@@ -263,6 +292,8 @@ el("dljson").addEventListener("click", () => {
 </html>
 """
 
-out = HTML.replace("__CORE_ZIP_B64__", B64).replace("__PYODIDE_VERSION__", PYODIDE_VERSION)
+out = (HTML.replace("__CORE_ZIP_B64__", B64)
+           .replace("__PYODIDE_VERSION__", PYODIDE_VERSION)
+           .replace("__PROFILE_OPTIONS__", PROFILE_OPTIONS))
 open(args.output, 'w').write(out)
 print(args.output, len(out), 'bytes')

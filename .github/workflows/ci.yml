@@ -6,8 +6,11 @@
 # first hosted run was measured on Linux only.
 #
 # Provenance note: the Linux-leg invocation below was executed verbatim in the
-# doc-89 session (fresh venv, no sample roots, no plugin — the CI condition);
-# the macOS/Windows legs are authored, not yet run (repo is pre-publication).
+# doc-89 session (fresh venv, no sample roots, no plugin — the CI condition).
+# The macOS and Windows legs were authored blind and first ran on publication
+# day: run #1 went green on all six legs in 41 s, which is what licensed the
+# verified-platforms sentence in README.md. Removing an OS from this matrix
+# means removing it from that sentence in the same commit.
 name: ci
 on:
   push:

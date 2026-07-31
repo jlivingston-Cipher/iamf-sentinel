@@ -29,6 +29,12 @@ publishers who have had no tooling — this is that tooling, and it is free to r
 pip install iamf-sentinel          # pure stdlib, Python ≥ 3.11 — no third-party runtime deps
 ```
 
+**Verified platforms.** Every push runs the core test suite on **Linux, macOS, and Windows**
+against **Python 3.11 and 3.12** — [`ci.yml`](.github/workflows/ci.yml) is the claim; the matrix
+is the evidence. `requires-python` is `>=3.11`, but only the two versions above are measured, and
+the sample-gated and plugin-gated tests skip in that environment by design. Nothing here is
+claimed for a platform that does not have a green leg.
+
 ## Run
 
 ```bash
@@ -45,11 +51,16 @@ Exit codes (the CI contract): **0** pass · **1** findings at/above threshold ·
 
 ### Validate in a browser — zero install
 
+**→ [Open the hosted inspector](https://jlivingston-cipher.github.io/iamf-sentinel/)** — no install,
+no account, nothing to upload.
+
 The same core also runs client-side as a **WASM inspector**: a single self-contained HTML page
 that validates and inspects an IAMF file in a browser tab. The file is parsed in-tab and never
-leaves your machine. Build it with `python3 wasm/make_inspector.py` (produces
-`iamf-inspector.html`); a native-vs-browser differential gate keeps the embedded core
-finding-identical to this package.
+leaves your machine — the page is static and has no server side. The hosted copy is
+[`docs/index.html`](docs/index.html) in this repository, built from this tree by
+`python3 wasm/make_inspector.py .` — the build is byte-deterministic, so you can regenerate it and
+confirm the page you are running is the code you are reading. A native-vs-browser differential gate
+keeps the embedded core finding-identical to this package.
 
 ## What the free core checks
 
@@ -66,7 +77,7 @@ finding-identical to this package.
 - **The CI contract.** Stable check-ID taxonomy (`S-1xx` structural / `S-2xx` semantic / `S-3xx`
   loudness / `S-4xx` container), FAIL/WARN/INFO severities, `json | text | html` reports, and a
   declarative `generic` profile. **This is the surface you cite:** "passes iamf-sentinel `S-1xx…S-4xx`
-  at v0.3.0."
+  at v0.3.1." (This example is version-coupled: it moves with every release.)
 
 ## What's in the Pro plugin (`iamf-sentinel-pro`) — also free, Apache-2.0
 
