@@ -1,0 +1,12 @@
+iamf-sentinel
+Copyright 2026 The iamf-sentinel authors
+
+This product includes software developed as an original, clean-room
+implementation written from the AOM IAMF v1.1.0 specification and
+ISO/IEC 14496-12 (ADR-3). No AOM reference-decoder or reference-encoder
+source code is used or derived. Reference decoders are invoked only as
+subprocess oracles, and only by the separate iamf-sentinel-pro plugin
+(not part of this package).
+
+"IAMF" is used descriptively. "Eclipsa" is a trademark of its owner and
+is not used in this project's naming.

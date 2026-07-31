@@ -1,0 +1,32 @@
+# iamf-sentinel core CI — 3-OS × 2-Python matrix (doc 88 Tier B, adopted doc 89).
+#
+# The core is stdlib-pure; this matrix converts "should run anywhere" into a
+# measured claim. Claims discipline (item 23): no OS is named in any README
+# until its leg here is green — every suite figure before this workflow's
+# first hosted run was measured on Linux only.
+#
+# Provenance note: the Linux-leg invocation below was executed verbatim in the
+# doc-89 session (fresh venv, no sample roots, no plugin — the CI condition);
+# the macOS/Windows legs are authored, not yet run (repo is pre-publication).
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[test]"
+      # Sample-gated and plugin-gated tests skip cleanly in this environment;
+      # zero failures is the gate.
+      - run: python -m pytest tests -q

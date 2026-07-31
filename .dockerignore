@@ -1,0 +1,17 @@
+# .dockerignore — release hygiene for the `oss` named context (doc 40 D-R2).
+# oci/Dockerfile does COPY --from=oss . /src/sentinel-oss into the discarded
+# pybuild stage (doc 41 — the tree no longer reaches the runtime image at
+# all); this file trims what rides into that stage's context.
+# BuildKit DOES honor a named local context's own .dockerignore — verified
+# empirically in doc 40 (in-image /opt/sentinel-oss lost tests/, fixtures/,
+# wasm/ with this file in place).
+# KEEP: sentinel/, pyproject.toml, README.md (pyproject readme=), LICENSE, NOTICE, F_TO_CHECK.md.
+tests/
+fixtures/
+wasm/
+.pytest_cache/
+**/__pycache__/
+*.pyc
+build/
+*.egg-info/
+.dockerignore

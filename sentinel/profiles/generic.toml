@@ -1,0 +1,6 @@
+name = "generic"
+description = "Baseline IAMF conformance — no platform-specific constraints."
+
+[require]
+
+[severity]
