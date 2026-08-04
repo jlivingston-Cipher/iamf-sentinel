@@ -121,6 +121,9 @@ the requirements trail and the acceptance test in one table.
   corpus + harness (the input-side instrument; this validator is the output-side one)
 - [`iamf-sentinel-mcp`](https://github.com/jlivingston-Cipher/iamf-sentinel-mcp) — MCP server
   exposing the validator and packager to agent runtimes
+- [`Inseglet`](https://github.com/inseglet-audio/inseglet) — authoring-side companion: a native
+  REAPER MCP extension that authors immersive masters (beds, ambisonics, ADM) and exports
+  straight into this stack's packager, whose output this validator gates
 
 ## License & support
 
