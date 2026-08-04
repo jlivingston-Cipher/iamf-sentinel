@@ -172,6 +172,49 @@ _reg(CheckSpec("S-332", "Source-vs-output level agreement", "L3", S.WARN, ("F21"
                "produced IAMF beyond tolerance — re-render/fold level shift (headroom "
                "risk class)."))
 
+# Intent-conformance QC (B1 — needs the session's intent sidecar;
+# sentinel_pro.intent_compare). The sidecar is the authoring session's own
+# prediction of its export; these checks answer "does the file render as the
+# session intended?" — the class that is structurally valid, loudness-
+# conformant, and wrong. No WP1/WP3 f_refs: the failure classes come from the
+# corpus x Inseglet cross-validation study, not the encoder catalogue.
+_reg(CheckSpec("S-340", "Intent: bed roster realized", "L3", S.FAIL, (),
+               "A bed channel the sidecar's roster predicts is absent from the "
+               "delivered file, or the file carries bed channels the session "
+               "never predicted (chna/pack walk; no audio measurement)."))
+_reg(CheckSpec("S-341", "Intent: predicted object present and audible", "L3",
+               S.FAIL, (),
+               "An object the sidecar predicts (and expects active) has no "
+               "essence track in the delivered file, or its track is silent — "
+               "the dropped/muted-object class."))
+_reg(CheckSpec("S-342", "Intent: authored trajectory realized", "L3", S.FAIL,
+               (),
+               "The delivered block trajectory diverges from the sidecar's "
+               "authored trajectory beyond posDeg (great-circle, per-slice, "
+               "p95) — the zeroed/frozen-position class."))
+_reg(CheckSpec("S-343", "Intent: rendered dominant speaker as predicted",
+               "L3", S.FAIL, (),
+               "Per-object isolation render (EAR): the per-slice dominant "
+               "speaker disagrees with the sidecar's decode prediction below "
+               "the dominantFrac agreement threshold (clear-dominance slices "
+               "only)."))
+_reg(CheckSpec("S-344", "Intent: stem levels and gain automation realized",
+               "L3", S.FAIL, (),
+               "A measured stem/channel level (RMS dBFS or BS.1770-4 gated "
+               "LKFS, conformant weights) or the delivered gain trajectory "
+               "deviates from the sidecar's prediction beyond levelLu — the "
+               "dropped-gain class."))
+_reg(CheckSpec("S-345", "Intent: no energy at predicted-silent channels",
+               "L3", S.FAIL, (),
+               "The isolation render puts significant energy at a channel the "
+               "sidecar's coverage prediction marks silent — the wrong-fold "
+               "class."))
+_reg(CheckSpec("S-346", "Intent: sidecar and file describe the same program",
+               "L3", S.FAIL, (),
+               "Sample rate, duration, bed layout, or scene order contradict "
+               "the sidecar — the wrong-file guard. When it fires, the "
+               "dependent intent checks are skipped."))
+
 # Container / profile
 _reg(CheckSpec("S-401", "IAMF brand present", "container", S.FAIL,
                description="MP4 compatible_brands includes 'iamf'."))

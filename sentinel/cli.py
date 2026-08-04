@@ -6,6 +6,7 @@
     sentinel diff A B [--render [--toolchain ROOT]]        # R7 full
     sentinel batch DIR [--l3 ...]
     sentinel adm-compare ADM_WAV IAMF [--layout L]      # Pro: ADM master vs IAMF deliverable
+    sentinel intent-compare SIDECAR ADM_WAV             # Pro: intent sidecar vs delivered ADM
 
 Exit codes: 0 pass · 1 findings at/above threshold · 2 execution error.
 """
@@ -136,6 +137,27 @@ def _cmd_adm_compare(args: argparse.Namespace) -> int:
     return res.exit_code()
 
 
+def _cmd_intent_compare(args: argparse.Namespace) -> int:
+    try:
+        import numpy  # noqa: F401
+    except ImportError:
+        print("intent-compare requires numpy (pip install "
+              "iamf-sentinel-pro[numpy]) — its trajectory/level math is "
+              "outside the sentinel-dsp kernel surface", file=sys.stderr)
+        return 2
+    try:
+        from sentinel_pro.intent_compare import (compare, render_json as icr_json,
+                                                 render_text as icr_text)
+    except ImportError:
+        print("intent-compare requires the iamf-sentinel-pro plugin "
+              "(not installed)", file=sys.stderr)
+        return 2
+    res = compare(args.sidecar, args.delivered, ear_bin=args.ear,
+                  workdir=args.workdir)
+    print(icr_json(res) if args.format == "json" else icr_text(res))
+    return res.exit_code()
+
+
 def _iter_media(root: str) -> Iterator[str]:
     if os.path.isfile(root):
         yield root
@@ -218,6 +240,18 @@ def build_parser() -> argparse.ArgumentParser:
     ac.add_argument("--toolchain", help="toolchain root containing the reference decoders")
     ac.add_argument("--format", choices=["text", "json"], default="text")
     ac.set_defaults(func=_cmd_adm_compare)
+
+    ic = sub.add_parser("intent-compare",
+                        help="intent-conformance QC: the session's intent "
+                             "sidecar vs the delivered ADM BW64 (S-34x; "
+                             "needs ear-render only when the sidecar carries "
+                             "decode predictions)")
+    ic.add_argument("sidecar", help="intent sidecar (.intent.json, schema 0)")
+    ic.add_argument("delivered", help="delivered ADM BW64 (.wav)")
+    ic.add_argument("--ear", help="path to ear-render (default: $SENTINEL_EAR or PATH)")
+    ic.add_argument("--workdir", help="keep isolation renders here instead of a temp dir")
+    ic.add_argument("--format", choices=["text", "json"], default="text")
+    ic.set_defaults(func=_cmd_intent_compare)
 
     b = sub.add_parser("batch", help="validate every .iamf/.mp4 under a directory (roll-up)")
     b.add_argument("root")
