@@ -75,3 +75,35 @@ own BS.1770-4 measurement.
 `S-106` referential integrity · `S-107` OBU ordering · `S-108` clean parse
 (truncation) · `S-109` profile constraints · `S-401` IAMF brand ·
 `S-402` fast-start · `S-404` IAMF sample entry.
+
+## Pro checks: source-referenced (S-33x) and intent-referenced (S-34x)
+
+Both families ship in `iamf-sentinel-pro` and need something *beside* the file under test.
+They are collected here because the traceability above is organised by **failure mode**, and
+only one of the two families has failure modes to be traced to.
+
+**Source-referenced fidelity QC** — `sentinel adm-compare`; needs the source BW64/ADM
+master. F-anchored, so it appears in the rows above rather than here: `S-330` (F16, F18) ·
+`S-331` (F17) · `S-332` (F21).
+
+**Intent-conformance QC** — `sentinel intent-compare`; needs the authoring session's
+**intent sidecar** beside the delivered ADM BW64. **No F-anchor, by construction.** The
+catalogue above is a catalogue of *encoder* failures, found by pushing ADM masters through
+IAMF encoders. These checks answer a different question — *does the delivered file render
+the way the session said it would?* — and their failure classes come from the corpus ×
+authoring-tool cross-validation study, not from the encoder catalogue. What they cover is
+the file that is structurally valid, loudness-conformant, and still not what was authored:
+the dropped object, the frozen position, the lost gain move.
+
+| Check | Level | Catches |
+|---|---|---|
+| **S-340** | FAIL | *Intent: bed roster realized* — a bed channel the roster predicts is absent, or the file carries bed channels the session never predicted (chna/pack walk; no audio measurement). |
+| **S-341** | FAIL | *Intent: predicted object present and audible* — a predicted, expected-active object has no essence track, or its track is silent: the dropped/muted-object class. |
+| **S-342** | FAIL | *Intent: authored trajectory realized* — delivered blocks diverge from the authored trajectory beyond `posDeg` (great-circle, per-slice, p95): the zeroed/frozen-position class. |
+| **S-343** | FAIL | *Intent: rendered dominant speaker as predicted* — per-object isolation render; per-slice dominant speaker disagrees with the decode prediction below the `dominantFrac` threshold (clear-dominance slices only). |
+| **S-344** | FAIL | *Intent: stem levels and gain automation realized* — a measured stem/channel level (RMS dBFS or BS.1770-4 gated LKFS, conformant weights) or the delivered gain trajectory deviates beyond `levelLu`: the dropped-gain class. |
+| **S-345** | FAIL | *Intent: no energy at predicted-silent channels* — the isolation render puts significant energy where the coverage prediction says silence: the wrong-fold class. |
+| **S-346** | FAIL | *Intent: sidecar and file describe the same program* — sample rate, duration, bed layout or scene order contradict the sidecar: the wrong-file guard. **When it fires, the dependent intent checks are skipped.** |
+
+The roster, trajectory and level legs need no EAR. The isolation legs (`S-343`, `S-345`) do,
+and the tool **refuses rather than silently comparing less** when EAR is absent.
