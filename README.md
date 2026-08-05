@@ -43,6 +43,7 @@ sentinel validate movie.mp4 --profile generic --format html -o report.html
 sentinel validate file.iamf --format json                 # CI: machine-readable findings
 sentinel batch ./deliverables                             # directory roll-up, worst-exit for CI
 sentinel diff a.iamf b.mp4                                 # descriptor-structure diff (remux proof)
+sentinel intent-compare sidecar.intent.json out.wav       # Pro: intent sidecar vs delivered ADM
 sentinel checks -v                                        # list the stable check registry
 ```
 
@@ -77,7 +78,7 @@ keeps the embedded core finding-identical to this package.
 - **The CI contract.** Stable check-ID taxonomy (`S-1xx` structural / `S-2xx` semantic / `S-3xx`
   loudness / `S-4xx` container), FAIL/WARN/INFO severities, `json | text | html` reports, and a
   declarative `generic` profile. **This is the surface you cite:** "passes iamf-sentinel `S-1xx…S-4xx`
-  at v0.3.2." (This example is version-coupled: it moves with every release.)
+  at v0.3.3." (This example is version-coupled: it moves with every release.)
 
 ## What's in the Pro plugin (`iamf-sentinel-pro`) — also free, Apache-2.0
 
