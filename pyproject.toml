@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]   # PEP 639 SPDX license strings (item 27)
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,10 +8,18 @@ version = "0.3.3"
 description = "IAMF conformance & QC validator — L1 structural + L2 channel-semantics + CI contract (free core)"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }          # ADR-3 clean-room; whole stack Apache-2.0 (A′, doc 48)
+# ADR-3 clean-room; whole stack Apache-2.0 (A′, doc 48)
+license = "Apache-2.0"                     # PEP 639 SPDX string (item 27)
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "The iamf-sentinel authors" }]
 keywords = ["iamf", "immersive-audio", "conformance", "validator", "ci", "loudness"]
 dependencies = []                          # standard library only (tomllib) — the frictionless-adoption shape
+
+[project.urls]
+Homepage   = "https://github.com/jlivingston-Cipher/iamf-sentinel"
+Repository = "https://github.com/jlivingston-Cipher/iamf-sentinel"
+Issues     = "https://github.com/jlivingston-Cipher/iamf-sentinel/issues"
+Inspector  = "https://jlivingston-cipher.github.io/iamf-sentinel/"
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
