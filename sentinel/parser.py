@@ -33,7 +33,7 @@ class IAMFParser:
                 hdr = self._read_obu_header()
                 payload = self._r.subreader(hdr.payload_len)
             except ParseError as e:
-                self.model.parse_notes.append(f"truncated OBU stream: {e}")
+                self._parse_error(f"truncated OBU stream: {e}")
                 break
             name = m.OBU_TYPE_NAME.get(hdr.obu_type, f"Unknown({hdr.obu_type})")
             self.model.obu_order.append(name)
@@ -51,7 +51,8 @@ class IAMFParser:
                 elif t == m.OBU_PARAMETER_BLOCK:
                     self._parse_parameter_block(payload, hdr)
                 elif t == m.OBU_TEMPORAL_DELIMITER:
-                    pass
+                    self.model.temporal_delimiter_is_not_key_frame.append(
+                        hdr.is_not_key_frame)
                 elif m.OBU_AUDIO_FRAME <= t <= m.OBU_AUDIO_FRAME_ID17:
                     self._parse_audio_frame(payload, hdr, first_temporal=not first_frame_seen)
                     first_frame_seen = True
@@ -62,7 +63,7 @@ class IAMFParser:
             except ParseError as e:
                 # Localised parse failure inside one OBU: record and continue so a
                 # single bad descriptor OBU still yields a structured report.
-                self.model.parse_notes.append(f"parse error in {name}: {e}")
+                self._parse_error(f"parse error in {name}: {e}")
 
             # descriptor span ends at the first audio frame / parameter block
             if t in (m.OBU_SEQUENCE_HEADER, m.OBU_CODEC_CONFIG,
@@ -71,15 +72,35 @@ class IAMFParser:
         self.model.descriptor_bytes = self._descriptor_end
         return self.model
 
+    def _parse_error(self, note: str) -> None:
+        """Record a genuine ParseError: kept in parse_notes (the ordered log)
+        and listed in parse_errors, which is what S-108 reports."""
+        self.model.parse_notes.append(note)
+        self.model.parse_errors.append(note)
+
     # ------------------------------------------------------------- OBU framing
     def _read_obu_header(self) -> m.OBUHeader:
         start = self._r.abs_pos
         b0 = self._r.u8()
-        obu_type, redundant, trimming, extension = split_bits(b0, 5, 1, 1, 1)
+        obu_type, redundant, bit6, extension = split_bits(b0, 5, 1, 1, 1)
+        # Header bit 6 is read per OBU type, as IAMF v2.0.0 OBUHeader() defines
+        # it: obu_trimming_status_flag on audio frames (types 5..23),
+        # optional_fields_flag on a Mix Presentation, is_not_key_frame on a
+        # Temporal Delimiter, reserved otherwise. Only the trimming flag adds
+        # header fields. v1.1.0 requires the bit to be 0 outside audio frames,
+        # so a conformant v1.1.0 stream reads the same.
+        trimming = optional_fields = not_key_frame = reserved = False
+        if m.OBU_AUDIO_FRAME <= obu_type <= m.OBU_AUDIO_FRAME_ID17:
+            trimming = bool(bit6)
+        elif obu_type == m.OBU_MIX_PRESENTATION:
+            optional_fields = bool(bit6)
+        elif obu_type == m.OBU_TEMPORAL_DELIMITER:
+            not_key_frame = bool(bit6)
+        else:
+            reserved = bool(bit6)
         size = self._r.uleb128()
         trim_end = trim_start = 0
         ext_consumed = 0
-        # trimming fields only for audio-frame OBUs, but honour the flag generally
         if trimming:
             before = self._r.pos
             trim_end = self._r.uleb128()
@@ -95,10 +116,12 @@ class IAMFParser:
             raise ParseError("obu_size smaller than trimming/extension fields", start)
         return m.OBUHeader(
             obu_type=obu_type, redundant_copy=bool(redundant),
-            trimming_status_flag=bool(trimming), extension_flag=bool(extension),
+            trimming_status_flag=trimming, extension_flag=bool(extension),
             obu_size=size, num_samples_to_trim_at_end=trim_end,
             num_samples_to_trim_at_start=trim_start, file_offset=start,
             payload_offset=self._r.abs_pos, payload_len=payload_len,
+            optional_fields_flag=optional_fields, is_not_key_frame=not_key_frame,
+            reserved_flag=reserved,
         )
 
     # ---------------------------------------------------------------- OBU bodies
@@ -136,7 +159,7 @@ class IAMFParser:
             elif codec_id == "mp4a":
                 cc.bit_depth = 16
         except ParseError as e:
-            self.model.parse_notes.append(f"codec_config {cc_id} decoder_config: {e}")
+            self._parse_error(f"codec_config {cc_id} decoder_config: {e}")
         self.model.codec_configs[cc_id] = cc
 
     def _parse_param_definition(self, r: ByteReader, ptype: int | None,
@@ -289,7 +312,25 @@ class IAMFParser:
             sub_mixes=sub_mixes, header=hdr,
             friendly_annotations_present=any(a for a in annotations),
         )
+        # Kept before the optional tail is read: a malformed tail is a parse
+        # error (S-108), not a missing Mix Presentation (S-105).
         self.model.mix_presentations.append(mp)
+        if hdr.optional_fields_flag:
+            # The optional fields follow MixPresentationTags, so the tags are
+            # walked to reach them (the tags themselves are not modelled).
+            for _ in range(r.u8()):           # num_tags
+                r.cstring()                   # tag_name
+                r.cstring()                   # tag_value
+            # optional_fields_size is an envelope: two renderer bytes, then
+            # optional_fields_remaining_bytes (reserved; skipped with the rest).
+            size = r.uleb128()
+            if size < 2:
+                raise ParseError(f"optional_fields_size {size} cannot hold the two "
+                                 "preferred-renderer bytes", r.abs_pos)
+            fields = r.subreader(size)
+            mp.optional_fields_size = size
+            mp.preferred_loudspeaker_renderer = fields.u8()
+            mp.preferred_binaural_renderer = fields.u8()
 
     def _parse_loudness_info(self, r: ByteReader, layout_type: int,
                              sound_system: int | None,

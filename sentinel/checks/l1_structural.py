@@ -12,10 +12,10 @@ KNOWN_PROFILES = {0, 1, 2}
 
 
 def run(mod: m.IAMFModel, ctx: CheckContext) -> Iterator[Finding]:
-    # S-108 clean parse
-    for note in mod.parse_notes:
-        if "truncated" in note or "exceeds" in note or "smaller than" in note:
-            yield finding(ctx, "S-108", f"structural parse problem: {note}")
+    # S-108 clean parse: every genuine ParseError, whatever its wording.
+    # Forward-compat skips and "not modelled" notes live in parse_notes only.
+    for err in mod.parse_errors:
+        yield finding(ctx, "S-108", f"structural parse problem: {err}")
 
     # S-101 sequence header present + first + ia_code
     sh = mod.sequence_header

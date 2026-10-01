@@ -145,8 +145,20 @@ def validate_bytes(data: bytes, *, source: str = "<bytes>", profile: str = "gene
                 # class is invisible to a descriptor-only parse.
                 raw = extract_iamf_stream(data, mp4info)
                 if raw is not None:
-                    mp4info.frame_refs = parse_bytes(
-                        raw, source=source, container="mp4").audio_frames
+                    walk = parse_bytes(raw, source=source, container="mp4")
+                    mp4info.frame_refs = walk.audio_frames
+                    mp4info.temporal_delimiter_is_not_key_frame = (
+                        walk.temporal_delimiter_is_not_key_frame)
+                    # The re-walk reads the descriptors again and then every
+                    # sample. A parse problem it meets past the descriptors
+                    # must reach S-108: a walk that stops early otherwise
+                    # shows up only as a short frame count in the trim checks.
+                    for err in walk.parse_errors:
+                        if err not in mod.parse_errors:
+                            note = ("MP4 samples (offsets in the reconstructed "
+                                    f"IA stream): {err}")
+                            mod.parse_notes.append(note)
+                            mod.parse_errors.append(note)
         else:
             mod = parse_bytes(data, source=source, container="raw")
         report.model = mod

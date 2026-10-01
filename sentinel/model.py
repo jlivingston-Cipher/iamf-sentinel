@@ -54,7 +54,7 @@ PARAM_RECON_GAIN = 2
 class OBUHeader:
     obu_type: int
     redundant_copy: bool
-    trimming_status_flag: bool
+    trimming_status_flag: bool    # header bit 6 on audio-frame OBUs (types 5..23)
     extension_flag: bool
     obu_size: int
     num_samples_to_trim_at_end: int = 0
@@ -62,6 +62,12 @@ class OBUHeader:
     file_offset: int = 0          # absolute offset of the header's first byte
     payload_offset: int = 0       # absolute offset where the payload begins
     payload_len: int = 0          # bytes of payload (after any trimming/ext fields)
+    # Header bit 6 on the other OBU types, as IAMF v2.0.0 OBUHeader() names it
+    # (v1.1.0 calls the bit obu_trimming_status_flag for every type and
+    # requires 0 outside audio frames). At most one bit-6 field is True.
+    optional_fields_flag: bool = False   # Mix Presentation OBU (type 2)
+    is_not_key_frame: bool = False       # Temporal Delimiter OBU (type 4)
+    reserved_flag: bool = False          # any other type; SHALL be 0
 
 
 @dataclass
@@ -162,6 +168,11 @@ class MixPresentation:
     sub_mixes: list[SubMix]
     header: OBUHeader | None = None
     friendly_annotations_present: bool = True
+    # Optional fields (IAMF v2.0.0 MixPresentationOBU(), present only when the
+    # header's optional_fields_flag is 1); None when the OBU carries none.
+    optional_fields_size: int | None = None
+    preferred_loudspeaker_renderer: int | None = None   # 0 = NONE, 1..255 reserved
+    preferred_binaural_renderer: int | None = None      # 0 = NONE, 1..255 reserved
 
 
 @dataclass
@@ -186,9 +197,16 @@ class IAMFModel:
     obu_order: list[str] = field(default_factory=list)   # OBU type names, in file order
     audio_frames: list[AudioFrameRef] = field(default_factory=list)
     parameter_block_ids: list[int] = field(default_factory=list)
+    # is_not_key_frame of every Temporal Delimiter OBU, in file order (IAMF
+    # v2.0.0: True = the temporal unit it opens is not a key frame).
+    temporal_delimiter_is_not_key_frame: list[bool] = field(default_factory=list)
     # descriptor byte span (for container/size reporting)
     descriptor_bytes: int = 0
     source: str = ""
     container: str = "raw"          # "raw" | "mp4"
     # non-fatal parse notes captured while reading (surfaced as INFO/L1)
     parse_notes: list[str] = field(default_factory=list)
+    # The subset of parse_notes that record a genuine ParseError. S-108 reads
+    # this list, not the wording: forward-compat skips and "not modelled"
+    # notes appear in parse_notes only and are never findings.
+    parse_errors: list[str] = field(default_factory=list)

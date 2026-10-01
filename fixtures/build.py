@@ -50,12 +50,16 @@ def q78(db: float) -> int:
 
 
 def obu(obu_type: int, payload: bytes, *, trim_start: int = 0,
-        trim_end: int = 0) -> bytes:
+        trim_end: int = 0, flag: bool = False) -> bytes:
     """OBU framing. Non-zero trim_* sets trimming_status_flag and writes the
-    num_samples_to_trim_at_end / _at_start leb128 fields (spec order)."""
+    num_samples_to_trim_at_end / _at_start leb128 fields (spec order).
+
+    flag sets the same header bit with no fields after it: the bit is
+    optional_fields_flag on a Mix Presentation and is_not_key_frame on a
+    Temporal Delimiter (IAMF v2.0.0 OBUHeader())."""
     w = Writer()
     trimming = 1 if (trim_start or trim_end) else 0
-    w.u8(((obu_type & 0x1F) << 3) | (trimming << 1))
+    w.u8(((obu_type & 0x1F) << 3) | ((trimming | int(flag)) << 1))
     fields = b""
     if trimming:
         fields = Writer().leb128(trim_end).leb128(trim_start).bytes()
@@ -102,6 +106,11 @@ class MixSpec:
     ae_ids: list[int]
     annotation: str
     layouts: list[LayoutSpec]
+    # (preferred_loudspeaker_renderer, preferred_binaural_renderer): writes the
+    # tags + optional fields tail and sets optional_fields_flag in the header.
+    optional_fields: tuple[int, int] | None = None
+    tags: list[tuple[str, str]] = field(default_factory=list)
+    optional_fields_remaining: bytes = b""    # optional_fields_remaining_bytes
 
 
 @dataclass
@@ -119,6 +128,8 @@ class IAMFSpec:
     truncate_to: int | None = None
     trim_start_first_tu: int = 0      # num_samples_to_trim_at_start on TU 0 frames
     trim_end_last_tu: int = 0         # num_samples_to_trim_at_end on last-TU frames
+    temporal_delimiters: bool = False             # a Temporal Delimiter opens every TU
+    non_key_tus: list[int] = field(default_factory=list)   # TUs with is_not_key_frame=1
 
     def copy(self) -> "IAMFSpec":
         import copy as _c
@@ -213,7 +224,15 @@ def _mix_presentation(mx: MixSpec, count_label: int = 1) -> bytes:
         w.s16(q78(ly.digital_db))
         if info_type & 1:
             w.s16(q78(ly.true_peak_db))
-    return obu(2, w.bytes())
+    if mx.optional_fields is None:
+        return obu(2, w.bytes())
+    w.u8(len(mx.tags))                # MixPresentationTags precede the optional fields
+    for name, value in mx.tags:
+        w.cstring(name).cstring(value)
+    w.leb128(2 + len(mx.optional_fields_remaining))        # optional_fields_size
+    w.u8(mx.optional_fields[0]).u8(mx.optional_fields[1])
+    w.raw(mx.optional_fields_remaining)
+    return obu(2, w.bytes(), flag=True)
 
 
 def _audio_frames(spec: IAMFSpec) -> bytes:
@@ -226,6 +245,8 @@ def _audio_frames(spec: IAMFSpec) -> bytes:
     for _tu in range(spec.temporal_units):
         ts = spec.trim_start_first_tu if _tu == 0 else 0
         te = spec.trim_end_last_tu if _tu == spec.temporal_units - 1 else 0
+        if spec.temporal_delimiters:
+            out += obu(4, b"", flag=_tu in spec.non_key_tus)
         for sid in declared:
             payload = Writer().leb128(sid).raw(pcm).bytes()
             out += obu(5, payload, trim_start=ts, trim_end=te)

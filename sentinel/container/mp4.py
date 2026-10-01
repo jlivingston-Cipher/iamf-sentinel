@@ -60,6 +60,8 @@ class MP4Info:
     # IA stream; populated by the engine so the trim checks (S-407..S-409) can
     # see MP4-carried frames. Empty when reconstruction is not possible.
     frame_refs: list = field(default_factory=list)
+    # is_not_key_frame of each Temporal Delimiter OBU met in that same re-walk.
+    temporal_delimiter_is_not_key_frame: list = field(default_factory=list)
 
 
 def _read_boxes(data: bytes, start: int,
