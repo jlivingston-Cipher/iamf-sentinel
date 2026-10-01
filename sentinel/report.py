@@ -24,6 +24,8 @@ def _summary_dict(report: Report) -> dict:
     if mod and mod.sequence_header:
         from . import model as m
         d["stream"] = {
+            # JSON contract: the name for a defined profile, the bare value
+            # for a reserved one (render_text / render_html label the latter).
             "primary_profile": m.PROFILE_NAME.get(mod.sequence_header.primary_profile,
                                                   mod.sequence_header.primary_profile),
             "codecs": sorted({cc.codec_id for cc in mod.codec_configs.values()}),
@@ -33,6 +35,13 @@ def _summary_dict(report: Report) -> dict:
             "audio_frames": len(mod.audio_frames),
         }
     return d
+
+
+def _profile_text(value: str | int) -> str:
+    """The summary's primary_profile for a human: a reserved value is said to
+    be reserved instead of being printed as a bare number."""
+    from . import model as m
+    return value if isinstance(value, str) else m.profile_label(value)
 
 
 def render_json(report: Report, *, indent: int = 2) -> str:
@@ -53,7 +62,8 @@ def render_text(report: Report, *, color: bool = False) -> str:
     lines.append(f"  profile  : {report.profile}   container: {report.container}")
     if "stream" in s:
         st = s["stream"]
-        lines.append(f"  stream   : {st['primary_profile']} profile, codec {','.join(st['codecs'])}, "
+        lines.append(f"  stream   : {_profile_text(st['primary_profile'])} profile, "
+                     f"codec {','.join(st['codecs'])}, "
                      f"{st['audio_elements']} element(s), {st['mix_presentations']} mix pres, "
                      f"{st['descriptor_bytes']}B descriptor")
     if report.execution_error:
@@ -104,7 +114,8 @@ def render_html(report: Report) -> str:
     stream_html = ""
     if "stream" in s:
         st = s["stream"]
-        stream_html = (f"{st['primary_profile']} profile · codec {', '.join(st['codecs'])} · "
+        stream_html = (f"{_profile_text(st['primary_profile'])} profile · "
+                       f"codec {', '.join(st['codecs'])} · "
                        f"{st['audio_elements']} element(s) · {st['mix_presentations']} mix pres · "
                        f"{st['descriptor_bytes']}B descriptor")
     return f"""<!doctype html><html><head><meta charset="utf-8">

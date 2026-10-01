@@ -248,7 +248,12 @@ def render_diff_text(res: DiffResult) -> str:
         lines.append("  descriptor structure and loudness identical.")
     for e in res.entries:
         d = f"  (Δ {e.delta:+.2f})" if e.delta is not None else ""
-        lines.append(f"  [{e.kind}] {e.where}: a={e.a}  b={e.b}{d}")
+        a, b = e.a, e.b
+        if e.where in ("primary_profile", "additional_profile"):
+            # A reserved value is carried as the bare number (JSON contract);
+            # the text says what it is.
+            a, b = (v if isinstance(v, str) else m.profile_label(v) for v in (a, b))
+        lines.append(f"  [{e.kind}] {e.where}: a={a}  b={b}{d}")
     if res.render_compared:
         corr = ", ".join(f"{c:.4f}" for c in res.render_channel_corr)
         lines.append("")

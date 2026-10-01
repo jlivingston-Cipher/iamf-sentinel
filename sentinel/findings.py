@@ -78,7 +78,9 @@ S = Severity
 _reg(CheckSpec("S-101", "IA Sequence Header present and first", "L1", S.FAIL,
                description="ia_sequence_header must be the first OBU with ia_code 'iamf'."))
 _reg(CheckSpec("S-102", "Profile recognised", "L1", S.WARN,
-               description="primary/additional profile in {Simple, Base, Base-Enhanced}."))
+               description="primary/additional profile is one of the six defined profiles "
+               "(0-5: Simple, Base, Base-Enhanced, Base-Advanced, Advanced-1, Advanced-2); "
+               "6-255 are reserved."))
 _reg(CheckSpec("S-103", "Codec config valid", "L1", S.FAIL,
                description="codec_id known; num_samples_per_frame>0; audio_roll_distance<=0."))
 _reg(CheckSpec("S-104", "Audio element present", "L1", S.FAIL))

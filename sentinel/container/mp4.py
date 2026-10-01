@@ -62,6 +62,11 @@ class MP4Info:
     frame_refs: list = field(default_factory=list)
     # is_not_key_frame of each Temporal Delimiter OBU met in that same re-walk.
     temporal_delimiter_is_not_key_frame: list = field(default_factory=list)
+    # Set by extract_iamf_stream when the sample tables are there but cannot
+    # be followed (a sample past the end of the file, or tables that disagree
+    # on the sample count). None when the stream was rebuilt, and also when
+    # there was nothing to rebuild from — only the first is "all samples read".
+    sample_table_error: str | None = None
 
 
 def _read_boxes(data: bytes, start: int,
@@ -231,7 +236,15 @@ def extract_iamf_stream(data: bytes, info: MP4Info) -> bytes | None:
     unit's OBUs. Concatenating descriptors + samples in order yields a valid
     raw IA sequence — which lets the reference-decoder oracles (raw-input
     only, or crash-prone on A/V MP4) run on exactly the delivered audio.
+
+    Returns None in two different situations. Not applicable: no descriptors,
+    no IAMF track, or empty sample tables (a fragmented file keeps its samples
+    in moof/trun, which this walker does not follow). Corrupt: the tables name
+    bytes the file does not have, or do not account for every sample — then
+    info.sample_table_error says which, so a caller can tell "nothing to
+    read" from "could not read what the file declares".
     """
+    info.sample_table_error = None
     if not info.descriptor_obus:
         return None
     track = next((t for t in info.tracks if t.has_iamf), None)
@@ -240,9 +253,13 @@ def extract_iamf_stream(data: bytes, info: MP4Info) -> bytes | None:
     # expand stsc runs -> samples per chunk
     per_chunk: list[int] = []
     stsc = track.stsc or [(1, len(track.sample_sizes))]
+    n_chunks = len(track.chunk_offsets)
     for i, (first, per) in enumerate(stsc):
-        last = stsc[i + 1][0] - 1 if i + 1 < len(stsc) else len(track.chunk_offsets)
-        per_chunk += [per] * max(0, last - first + 1)
+        last = stsc[i + 1][0] - 1 if i + 1 < len(stsc) else n_chunks
+        # first_chunk is an untrusted u32: never expand a run past the chunks
+        # stco actually lists, or a hostile table asks for a multi-gigabyte list.
+        run = min(max(0, last - first + 1), n_chunks - len(per_chunk))
+        per_chunk += [per] * run
     out = [info.descriptor_obus]
     si = 0
     for ci, coff in enumerate(track.chunk_offsets):
@@ -253,11 +270,19 @@ def extract_iamf_stream(data: bytes, info: MP4Info) -> bytes | None:
                 break
             size = track.sample_sizes[si]
             if off + size > len(data):
-                return None                      # corrupt tables — bail cleanly
+                # corrupt tables (or a truncated file) — bail cleanly
+                info.sample_table_error = (
+                    f"sample {si} of {len(track.sample_sizes)} is {size} bytes at "
+                    f"offset {off}, which runs past the end of the file "
+                    f"({len(data)} bytes)")
+                return None
             out.append(data[off:off + size])
             off += size
             si += 1
     if si != len(track.sample_sizes):
+        info.sample_table_error = (
+            f"stsz declares {len(track.sample_sizes)} samples but stsc/stco "
+            f"place only {si} of them ({len(track.chunk_offsets)} chunk(s))")
         return None
     return b"".join(out)
 

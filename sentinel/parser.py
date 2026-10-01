@@ -17,10 +17,24 @@ from .reader import ByteReader, ParseError, split_bits
 from . import model as m
 
 
+# OBU types this parser models for which IAMF v2.0.0 OBUHeader() leaves header
+# bit 6 reserved ("SHALL be set to 0", v2:637): Sequence Header, Codec Config,
+# Audio Element, Parameter Block. The reserved OBU types 24..30 are left out on
+# purpose: they are forward-compatibility skips, and bit 6 is exactly the kind
+# of bit a later version gives a meaning to.
+_RESERVED_BIT6_TYPES = (m.OBU_SEQUENCE_HEADER, m.OBU_CODEC_CONFIG,
+                        m.OBU_AUDIO_ELEMENT, m.OBU_PARAMETER_BLOCK)
+
+# Profiles whose defining specification version has object-based elements
+# (Base-Advanced, Advanced-1, Advanced-2; v2:3204, v2:3223, v2:3247).
+_OBJECT_PROFILES = (3, 4, 5)
+
+
 class IAMFParser:
     def __init__(self, data: bytes, *, source: str = "", container: str = "raw") -> None:
         self._r = ByteReader(data)
         self.model = m.IAMFModel(source=source, container=container)
+        self._reserved_bit_reported: set[int] = set()
         self._descriptor_end = 0
 
     # ---------------------------------------------------------------- top level
@@ -39,6 +53,15 @@ class IAMFParser:
             self.model.obu_order.append(name)
 
             t = hdr.obu_type
+            if (hdr.reserved_flag and t in _RESERVED_BIT6_TYPES
+                    and t not in self._reserved_bit_reported):
+                # A SHALL (v2:637), so a parse error for S-108 — once per OBU
+                # type, at its first occurrence. The bit adds no fields, so the
+                # OBU itself is still read normally below.
+                self._reserved_bit_reported.add(t)
+                self._parse_error(
+                    f"reserved header bit 6 is set on a {name} OBU; IAMF v2.0.0 "
+                    f"requires 0 (first at byte {hdr.file_offset})")
             try:
                 if t == m.OBU_SEQUENCE_HEADER:
                     self._parse_sequence_header(payload, hdr)
@@ -212,9 +235,11 @@ class IAMFParser:
             self._parse_scalable_channel_layout(r, ae)
         elif ae_type == m.AUDIO_ELEMENT_SCENE:
             self._parse_ambisonics_config(r, ae)
+        elif ae_type == m.AUDIO_ELEMENT_OBJECT:
+            self._parse_objects_config(r, ae)
         else:
             self.model.parse_notes.append(
-                f"audio_element {ae_id}: type {ae_type} (object/reserved) config not modelled"
+                f"audio_element {ae_id}: type {ae_type} (reserved) config not modelled"
             )
         self.model.audio_elements[ae_id] = ae
 
@@ -231,12 +256,14 @@ class IAMFParser:
                 recon_gain_is_present=bool(rg_present), substream_count=substream_count,
                 coupled_substream_count=coupled_count,
             )
-            if lsl == 15:
-                layer.expanded_loudspeaker_layout = r.u8()
+            # ChannelAudioLayerConfig() order (v2:943-957, v1.1:910-924): the
+            # output_gain fields, then expanded_loudspeaker_layout last.
             if og_present:
                 ogb = r.u8()
                 layer.output_gain_flags = (ogb >> 2) & 0x3F
                 layer.output_gain = r.s16()
+            if lsl == 15:
+                layer.expanded_loudspeaker_layout = r.u8()
             ae.channel_layers.append(layer)
 
     def _parse_ambisonics_config(self, r: ByteReader, ae: m.AudioElement) -> None:
@@ -249,6 +276,7 @@ class IAMFParser:
             ae.ambisonics = m.AmbisonicsConfig(
                 mode=mode, output_channel_count=occ, substream_count=scount,
                 channel_mapping=mapping, order=order_from_ambisonics_channels(occ),
+                coded_channel_count=scount,
             )
         elif mode == 1:  # PROJECTION
             occ = r.u8()
@@ -261,9 +289,44 @@ class IAMFParser:
                 mode=mode, output_channel_count=occ, substream_count=scount,
                 coupled_substream_count=ccount,
                 order=order_from_ambisonics_channels(occ),
+                coded_channel_count=scount + ccount,
             )
         else:
             self.model.parse_notes.append(f"ambisonics mode {mode} not modelled")
+
+    def _parse_objects_config(self, r: ByteReader, ae: m.AudioElement) -> None:
+        """ObjectsConfig() (IAMF v2.0.0): objects_config_size is an envelope
+        holding num_objects and then reserved extension bytes, which are
+        skipped with the envelope.
+
+        Bytes that do not form an ObjectsConfig leave the element in the
+        model with its object count unknown. Whether that is an error depends
+        on what the sequence declares. Type 2 was a reserved value before
+        v2.0.0, so a stream whose primary_profile and additional_profile are
+        both outside 3..5 (or whose Sequence Header has not been read) may
+        carry any bytes here: a note. When either profile is one that defines
+        object-based elements, the config is required and a truncated,
+        zero-size or absent one is a genuine parse error (S-108).
+        """
+        try:
+            size = r.uleb128()
+            if size < 1:
+                raise ParseError("objects_config_size 0 cannot hold num_objects",
+                                 r.abs_pos)
+            num_objects = r.subreader(size).u8()
+        except ParseError as e:
+            sh = self.model.sequence_header
+            note = (f"audio_element {ae.audio_element_id}: type 2 config is not an "
+                    f"ObjectsConfig ({e}); object count unknown")
+            if sh is not None and (sh.primary_profile in _OBJECT_PROFILES
+                                   or sh.additional_profile in _OBJECT_PROFILES):
+                self._parse_error(note)
+            else:
+                self.model.parse_notes.append(note)
+            return
+        ae.objects = m.ObjectsConfig(objects_config_size=size,
+                                     num_objects=num_objects,
+                                     extension_bytes=size - 1)
 
     def _parse_mix_presentation(self, r: ByteReader, hdr: m.OBUHeader) -> None:
         from .layouts import (SOUND_SYSTEM, LAYOUT_TYPE_SS, LAYOUT_TYPE_BINAURAL)

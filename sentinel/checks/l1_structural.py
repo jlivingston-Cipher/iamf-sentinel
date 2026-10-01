@@ -8,7 +8,7 @@ from ..findings import Finding
 from .. import model as m
 
 KNOWN_CODECS = {"Opus", "ipcm", "fLaC", "mp4a"}
-KNOWN_PROFILES = {0, 1, 2}
+KNOWN_PROFILES = set(m.PROFILE_NAME)      # 0..5; 6..255 are reserved (v2:695)
 
 
 def run(mod: m.IAMFModel, ctx: CheckContext) -> Iterator[Finding]:
@@ -31,8 +31,9 @@ def run(mod: m.IAMFModel, ctx: CheckContext) -> Iterator[Finding]:
         # S-102 profile recognised
         for role, val in (("primary", sh.primary_profile), ("additional", sh.additional_profile)):
             if val not in KNOWN_PROFILES:
-                yield finding(ctx, "S-102", f"{role}_profile {val} not recognised "
-                              f"(Simple/Base/Base-Enhanced = 0/1/2)", found=str(val))
+                yield finding(ctx, "S-102", f"{role}_profile {val} is reserved "
+                              f"(defined profiles are 0-5: "
+                              f"{', '.join(m.PROFILE_NAME.values())})", found=str(val))
 
     # S-103 codec config valid
     if not mod.codec_configs:

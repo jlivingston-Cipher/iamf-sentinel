@@ -37,7 +37,16 @@ AUDIO_ELEMENT_CHANNEL = 0
 AUDIO_ELEMENT_SCENE = 1
 AUDIO_ELEMENT_OBJECT = 2
 
-PROFILE_NAME = {0: "Simple", 1: "Base", 2: "Base-Enhanced"}
+# primary_profile / additional_profile values (IAMF v2.0.0 Sequence Header
+# semantics, v2:688-695). 0..2 are also the v1.1.0 set; 6..255 are "Reserved
+# for future profiles".
+PROFILE_NAME = {0: "Simple", 1: "Base", 2: "Base-Enhanced",
+                3: "Base-Advanced", 4: "Advanced-1", 5: "Advanced-2"}
+
+
+def profile_label(value: int) -> str:
+    """Display name of a profile value; a value outside 0..5 is reserved."""
+    return PROFILE_NAME.get(value, f"reserved ({value})")
 
 # param_definition_type (IAMF v1.1.0 §3.6.1: 0=MIX_GAIN, 1=DEMIXING, 2=RECON_GAIN).
 # NOTE: Phase 1 shipped these off by one (demixing=0/recon=1); no Phase-1
@@ -112,6 +121,19 @@ class AmbisonicsConfig:
     coupled_substream_count: int = 0
     channel_mapping: list[int] = field(default_factory=list)
     order: int | None = None          # derived from output_channel_count
+    # Channels actually coded: substream_count + coupled_substream_count
+    # (derived). Differs from output_channel_count for mixed-order and
+    # projection content; the profile limits do not say which of the two a
+    # scene-based element counts as, so both are kept.
+    coded_channel_count: int = 0
+
+
+@dataclass
+class ObjectsConfig:
+    """ObjectsConfig() of an object-based element (IAMF v2.0.0, v2:1305-1322)."""
+    objects_config_size: int          # envelope: bytes after the size field
+    num_objects: int                  # one channel of audio per object
+    extension_bytes: int = 0          # objects_config_extension_bytes skipped
 
 
 @dataclass
@@ -136,6 +158,10 @@ class AudioElement:
     parameters: list[ParamDefinition]
     channel_layers: list[ChannelLayerConfig] = field(default_factory=list)
     ambisonics: AmbisonicsConfig | None = None
+    # None for an object-based element whose config bytes do not parse as an
+    # ObjectsConfig (the object count is then unknown, never guessed; the
+    # parser decides whether that is a note or a parse error).
+    objects: ObjectsConfig | None = None
     header: OBUHeader | None = None
 
 

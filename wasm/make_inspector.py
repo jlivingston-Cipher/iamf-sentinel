@@ -25,7 +25,8 @@ OSS_CORE_FILES = [
     "sentinel/findings.py", "sentinel/report.py", "sentinel/engine.py",
     "sentinel/cli.py", "sentinel/diff.py",
     "sentinel/checks/__init__.py", "sentinel/checks/base.py",
-    "sentinel/checks/l1_structural.py", "sentinel/checks/l2_semantics.py",
+    "sentinel/checks/l1_structural.py", "sentinel/checks/l1_profile.py",
+    "sentinel/checks/l2_semantics.py",
     "sentinel/checks/l3_loudness.py", "sentinel/checks/container.py",
     "sentinel/container/__init__.py", "sentinel/container/mp4.py",
     "sentinel/profiles/generic.toml",
@@ -234,7 +235,10 @@ function fmtSummary(res, name) {
   let h = `<h2>${name} <span class="badge ${badge}">${s.result}</span>
     <span class="kv" style="margin-left:8px">exit ${doc.exit_code} · ${s.container} · profile ${s.profile}</span></h2>`;
   h += `<div class="kv">FAIL <b>${c.FAIL}</b> · WARN <b>${c.WARN}</b> · INFO <b>${c.INFO}</b>`;
-  if (s.stream) h += ` &nbsp;|&nbsp; ${s.stream.primary_profile} profile · codecs ${s.stream.codecs.join(",")}
+  // primary_profile is a name for a defined profile and the bare value for a reserved one.
+  const prof = s.stream && (typeof s.stream.primary_profile === "number"
+    ? `reserved (${s.stream.primary_profile})` : s.stream.primary_profile);
+  if (s.stream) h += ` &nbsp;|&nbsp; ${prof} profile · codecs ${s.stream.codecs.join(",")}
     · ${s.stream.audio_elements} element(s) · ${s.stream.mix_presentations} mix presentation(s)
     · ${s.stream.audio_frames} frames`;
   if (s.execution_error) h += ` &nbsp;|&nbsp; <span style="color:var(--fail)">${s.execution_error}</span>`;

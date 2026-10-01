@@ -213,3 +213,169 @@ def test_mp4_descriptor_parse_error_is_reported_once():
     r = validate_bytes(wrap_mp4(_unterminated_annotation()), source="once")
     (msg,) = _s108(r)
     assert "unterminated string" in msg and "MP4 samples" not in msg
+
+
+# ----------------------------- reserved bit 6 where IAMF v2.0.0 keeps it at 0
+# Sequence Header, Codec Config, Audio Element and Parameter Block have no
+# meaning for the bit ("SHALL be set to 0"). Setting it is a parse error for
+# S-108, and the OBU is still read: the bit adds no fields.
+RESERVED_BIT6_MESSAGE = ("structural parse problem: reserved header bit 6 is set on "
+                         "a {} OBU; IAMF v2.0.0 requires 0 (first at byte {})")
+
+
+def _with_parameter_blocks(n: int = 1, bit6: bool = False) -> bytes:
+    """A stereo stream with n Parameter Block OBUs between descriptors and frames."""
+    spec = B.channel_spec("stereo")
+    block = B.obu(3, B.Writer().leb128(1000).raw(b"\x00\x00").bytes(), flag=bit6)
+    return _descriptors(spec) + block * n + B._audio_frames(spec)
+
+
+def _obu_offsets(stream: bytes) -> dict[str, int]:
+    """Offset of the first OBU of each modelled type in _with_parameter_blocks()."""
+    mod = parse_bytes(stream)
+    return {"SequenceHeader": mod.sequence_header.header.file_offset,
+            "CodecConfig": mod.codec_configs[0].header.file_offset,
+            "AudioElement": mod.audio_elements[300].header.file_offset,
+            # the first Parameter Block follows the descriptors directly
+            "ParameterBlock": len(_descriptors(B.channel_spec("stereo")))}
+
+
+def _set_bit6(stream: bytes, offset: int) -> bytes:
+    out = bytearray(stream)
+    out[offset] |= 0x02
+    return bytes(out)
+
+
+def _shape(mod):
+    """What the stream said, apart from the header bit under test."""
+    return (mod.sequence_header.ia_code, mod.sequence_header.primary_profile,
+            sorted(mod.codec_configs), sorted(mod.audio_elements),
+            [mp.mix_presentation_id for mp in mod.mix_presentations],
+            mod.parameter_block_ids, mod.obu_order,
+            [(f.substream_id, f.payload_len) for f in mod.audio_frames])
+
+
+def test_reserved_bit6_clear_is_silent():
+    r = validate_bytes(_with_parameter_blocks(), source="bit6-clear")
+    assert r.model.parse_errors == [] and _s108(r) == []
+    assert r.model.parameter_block_ids == [1000]
+
+
+@pytest.mark.parametrize("name", ["SequenceHeader", "CodecConfig", "AudioElement",
+                                  "ParameterBlock"])
+def test_reserved_bit6_set_is_s108_and_the_obu_is_still_read(name):
+    clean = _with_parameter_blocks()
+    offset = _obu_offsets(clean)[name]
+    r = validate_bytes(_set_bit6(clean, offset), source="bit6-set")
+    assert _s108(r) == [RESERVED_BIT6_MESSAGE.format(name, offset)]
+    assert _shape(r.model) == _shape(parse_bytes(clean))
+    assert r.exit_code() == 1
+
+
+def test_reserved_bit6_is_reported_once_per_obu_type():
+    stream = _with_parameter_blocks(n=3, bit6=True)
+    offsets = _obu_offsets(stream)
+    r = validate_bytes(_set_bit6(stream, offsets["CodecConfig"]), source="bit6-many")
+    assert _s108(r) == [
+        RESERVED_BIT6_MESSAGE.format("CodecConfig", offsets["CodecConfig"]),
+        RESERVED_BIT6_MESSAGE.format("ParameterBlock", offsets["ParameterBlock"])]
+    assert r.model.parameter_block_ids == [1000, 1000, 1000]
+
+
+@pytest.mark.parametrize("obu_type", [24, 25, 30])
+def test_reserved_bit6_on_obu_types_the_parser_skips_is_not_reported(obu_type):
+    # 25 and 30 are reserved OBU types: a later version may give the bit a
+    # meaning there, as v2.0.0 did for two existing types. 24 (Metadata) is
+    # defined by v2.0.0 and its bit 6 is reserved, but this parser does not
+    # read that OBU yet, so it stays a forward-compatibility skip for now.
+    frames = B.obu(obu_type, b"\x01", flag=True) + B.obu(5, b"\x00" + PCM)
+    r = validate_bytes(_descriptors(B.channel_spec("stereo")) + frames, source="skip")
+    assert r.model.parse_errors == [] and _s108(r) == []
+    assert len(r.model.audio_frames) == 1
+
+
+def test_reserved_bit6_in_mp4_descriptors_is_reported_once():
+    clean = B.build(B.channel_spec("stereo"))
+    offset = _obu_offsets(_with_parameter_blocks())["CodecConfig"]
+    r = validate_bytes(wrap_mp4(_set_bit6(clean, offset)), source="bit6-mp4")
+    assert _s108(r) == [RESERVED_BIT6_MESSAGE.format("CodecConfig", offset)]
+    assert len(r.mp4.frame_refs) == 2
+
+
+# ------------------------------------------- MP4 samples that cannot be read
+# extract_iamf_stream returns None both when there is nothing to rebuild from
+# and when the sample tables cannot be followed. Only the second is an error,
+# and it must not leave the report clean: the samples were never read.
+def _four_tu_mp4() -> bytes:
+    spec = B.channel_spec("stereo")
+    spec.temporal_units = 4
+    return wrap_mp4(B.build(spec))
+
+
+def _patch_u32(mp4: bytes, fourcc: bytes, field_offset: int, value: int) -> bytes:
+    """Overwrite one 32-bit field of a box, counted from its fourcc."""
+    at = mp4.index(fourcc) + field_offset
+    return mp4[:at] + value.to_bytes(4, "big") + mp4[at + 4:]
+
+
+def test_mp4_with_every_sample_present_is_silent():
+    from sentinel.container.mp4 import extract_iamf_stream, parse_mp4
+    mp4 = _four_tu_mp4()
+    r = validate_bytes(mp4, source="whole")
+    assert _s108(r) == [] and r.mp4.sample_table_error is None
+    assert len(r.mp4.frame_refs) == 4
+    assert isinstance(extract_iamf_stream(mp4, parse_mp4(mp4)), bytes)
+
+
+def test_mp4_truncated_inside_the_last_sample_is_s108():
+    from sentinel.container.mp4 import extract_iamf_stream, parse_mp4
+    mp4 = _four_tu_mp4()[:-3]
+    r = validate_bytes(mp4, source="truncated")
+    (msg,) = _s108(r)
+    assert msg.startswith("structural parse problem: MP4 samples could not be read: "
+                          "sample 3 of 4 is 11 bytes at offset ")
+    assert msg.endswith(f"which runs past the end of the file ({len(mp4)} bytes)")
+    assert r.mp4.frame_refs == [] and r.exit_code() == 1
+    info = parse_mp4(mp4)
+    assert extract_iamf_stream(mp4, info) is None       # the return value is unchanged
+    assert info.sample_table_error == r.mp4.sample_table_error
+
+
+def test_mp4_sample_tables_that_disagree_is_s108():
+    mp4 = _patch_u32(_four_tu_mp4(), b"stsc", 16, 3)    # samples_per_chunk 4 -> 3
+    r = validate_bytes(mp4, source="short-stsc")
+    assert _s108(r) == ["structural parse problem: MP4 samples could not be read: stsz "
+                        "declares 4 samples but stsc/stco place only 3 of them (1 chunk(s))"]
+    assert r.exit_code() == 1
+
+
+def test_mp4_hostile_stsc_run_is_bounded_by_the_chunk_table():
+    # first_chunk is an untrusted u32. A later run that starts millions of
+    # chunks ahead must not make the walker build a list that long: the
+    # expansion is bounded by the chunks stco lists, and the tables then
+    # simply disagree (S-108).
+    import tracemalloc
+    from sentinel.container.mp4 import extract_iamf_stream, parse_mp4
+    mp4 = _four_tu_mp4()
+    info = parse_mp4(mp4)
+    track = next(t for t in info.tracks if t.has_iamf)
+    assert extract_iamf_stream(mp4, info) is not None and len(track.chunk_offsets) == 1
+    track.stsc = [(1, 1), (2_000_001, 17), (3, 3)]
+    tracemalloc.start()
+    try:
+        assert extract_iamf_stream(mp4, info) is None
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 1_000_000, f"stsc run expansion allocated {peak} bytes"
+    assert "place only 1 of them" in info.sample_table_error
+
+
+def test_mp4_without_sample_tables_is_not_an_error():
+    # As in a fragmented file: no samples in stsz, so nothing to rebuild from.
+    from sentinel.container.mp4 import extract_iamf_stream, parse_mp4
+    mp4 = _patch_u32(_four_tu_mp4(), b"stsz", 12, 0)    # sample_count 4 -> 0
+    r = validate_bytes(mp4, source="no-tables")
+    assert _s108(r) == [] and r.mp4.sample_table_error is None
+    info = parse_mp4(mp4)
+    assert extract_iamf_stream(mp4, info) is None and info.sample_table_error is None

@@ -43,7 +43,8 @@ RESERVED_LOUDSPEAKER_LAYOUTS = {10, 11, 12, 13, 14}
 
 # expanded_loudspeaker_layout (8-bit, only when loudspeaker_layout == 15).
 # Base-Enhanced profile feature (IAMF v1.1.0). Names per spec; counts are
-# informational for Phase 1 (checked leniently).
+# informational for Phase 1 (checked leniently). 13..19 are defined by IAMF
+# v2.0.0 and reserved in v1.1.0; 20..255 are reserved in both.
 EXPANDED_LOUDSPEAKER_LAYOUT: dict[int, str] = {
     0: "LFE",
     1: "Stereo-S",
@@ -58,6 +59,40 @@ EXPANDED_LOUDSPEAKER_LAYOUT: dict[int, str] = {
     10: "Stereo-Si",
     11: "Stereo-TpSi",
     12: "Top-6ch",
+    13: "10.2.9.3",
+    14: "LFE-Pair",
+    15: "Bottom-3ch",
+    16: "7.1.5.4",
+    17: "Bottom-4ch",
+    18: "Top-1ch",
+    19: "Top-5ch",
+}
+
+# Channels per expanded layout. The spec's table has no channel-count column;
+# each figure is the number of entries in that row's "Loudspeaker Location
+# Ordering" (IAMF v2.0.0 source line cited per row; the three long orderings
+# are spelled out at v2:1130, v2:1132 and v2:1134).
+EXPANDED_LAYOUT_CHANNELS: dict[int, int] = {
+    0: 1,      # LFE                                   v2:1066
+    1: 2,      # Stereo-S      Ls/Rs                   v2:1069
+    2: 2,      # Stereo-SS     Lss/Rss                 v2:1072
+    3: 2,      # Stereo-RS     Lrs/Rrs                 v2:1075
+    4: 2,      # Stereo-TF     Ltf/Rtf                 v2:1078
+    5: 2,      # Stereo-TB     Ltb/Rtb                 v2:1081
+    6: 4,      # Top-4ch       Ltf/Rtf/Ltb/Rtb         v2:1084
+    7: 3,      # 3.0ch         L/C/R                   v2:1087
+    8: 16,     # 9.1.6ch       16 locations            v2:1090, v2:1130
+    9: 2,      # Stereo-F      FL/FR                   v2:1093
+    10: 2,     # Stereo-Si     SiL/SiR                 v2:1096
+    11: 2,     # Stereo-TpSi   TpSiL/TpSiR             v2:1099
+    12: 6,     # Top-6ch       6 locations             v2:1102
+    13: 24,    # 10.2.9.3ch    24 locations            v2:1105, v2:1132
+    14: 2,     # LFE-Pair      LFE1/LFE2               v2:1108
+    15: 3,     # Bottom-3ch    BtFL/BtFC/BtFR          v2:1111
+    16: 17,    # 7.1.5.4ch     17 locations            v2:1114, v2:1134
+    17: 4,     # Bottom-4ch    BtFL/BtFR/BtBL/BtBR     v2:1117
+    18: 1,     # Top-1ch       TpC                     v2:1120
+    19: 5,     # Top-5ch       Ltf/Rtf/TpC/Ltb/Rtb     v2:1123
 }
 
 # Layout.sound_system (4-bit, LOUDSPEAKERS_SS_CONVENTION) used in mix

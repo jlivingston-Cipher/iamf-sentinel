@@ -18,9 +18,69 @@ from .parser import parse_bytes
 from .container.mp4 import parse_mp4, MP4Info, extract_iamf_stream
 from .findings import Finding, Severity
 from .checks.base import CheckContext, finding
-from .checks import l1_structural, l2_semantics, l3_loudness, container as container_checks
+from .checks import (l1_structural, l1_profile, l2_semantics, l3_loudness,
+                     container as container_checks)
 
 PROFILE_DIR = os.path.join(os.path.dirname(__file__), "profiles")
+
+# require.primary_profile_at_most: "this profile or simpler". The order is the
+# decoder-capability chain the specification states, and it is partial: Base
+# covers Simple (err:1876), Base-Enhanced covers Base (v1.1:1956),
+# Base-Advanced covers Base-Enhanced "except for the maximum number of
+# channels to handle" (v2:3202: 18 against 28, so Base-Enhanced is NOT at or
+# below Base-Advanced or Advanced-1), Advanced-1 covers Base-Advanced
+# (v2:3226), Advanced-2 covers Base-Enhanced and Advanced-1 (v2:3247).
+PROFILE_AT_MOST: dict[int, frozenset[int]] = {
+    0: frozenset({0}),
+    1: frozenset({0, 1}),
+    2: frozenset({0, 1, 2}),
+    3: frozenset({0, 1, 3}),
+    4: frozenset({0, 1, 3, 4}),
+    5: frozenset({0, 1, 2, 3, 4, 5}),
+}
+_PRIMARY_PROFILE_KEYS = ("primary_profile", "primary_profile_in",
+                         "primary_profile_at_most")
+
+
+class ProfilePackError(ValueError):
+    """A profile pack whose [require] table cannot be applied as written."""
+
+
+def check_profile_pack(prof: dict, name: str) -> None:
+    """Reject a pack whose primary-profile requirement is contradictory or
+    malformed, rather than guess what it meant.
+
+    The three keys are alternatives, each naming the set of primary_profile
+    values the platform accepts:
+
+        primary_profile          = 1          exactly this profile
+        primary_profile_in       = [1, 3]     any of these profiles
+        primary_profile_at_most  = 3          this profile or simpler
+                                              (PROFILE_AT_MOST: 3 -> 0, 1, 3)
+    """
+    require = prof.get("require", {})
+    used = [k for k in _PRIMARY_PROFILE_KEYS if k in require]
+    if len(used) > 1:
+        raise ProfilePackError(
+            f"profile pack {name!r} sets {' and '.join('require.' + k for k in used)}; "
+            "these keys are alternatives — set exactly one")
+
+    def is_profile_value(v: object) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 255
+
+    if "primary_profile_in" in require:
+        vals = require["primary_profile_in"]
+        if (not isinstance(vals, list) or not vals
+                or not all(is_profile_value(v) for v in vals)):
+            raise ProfilePackError(
+                f"profile pack {name!r}: require.primary_profile_in must be a "
+                f"non-empty list of profile values 0-255, got {vals!r}")
+    if "primary_profile_at_most" in require:
+        val = require["primary_profile_at_most"]
+        if not is_profile_value(val) or val not in PROFILE_AT_MOST:
+            raise ProfilePackError(
+                f"profile pack {name!r}: require.primary_profile_at_most must be "
+                f"a defined profile (0-5), got {val!r}")
 
 
 @dataclass
@@ -111,7 +171,8 @@ def validate_bytes(data: bytes, *, source: str = "<bytes>", profile: str = "gene
                    source_path: str | None = None) -> Report:
     try:
         prof = load_profile(profile)
-    except (FileNotFoundError, tomllib.TOMLDecodeError) as e:
+        check_profile_pack(prof, profile)
+    except (FileNotFoundError, tomllib.TOMLDecodeError, ProfilePackError) as e:
         r = Report(source=source, profile=profile, container="?")
         r.execution_error = str(e)
         return r
@@ -159,11 +220,21 @@ def validate_bytes(data: bytes, *, source: str = "<bytes>", profile: str = "gene
                                     f"IA stream): {err}")
                             mod.parse_notes.append(note)
                             mod.parse_errors.append(note)
+                elif mp4info.sample_table_error:
+                    # The tables are there and cannot be followed: the samples
+                    # were not read, and an unread stream is never reported
+                    # clean. (No tables at all — a fragmented file — is not an
+                    # error and leaves sample_table_error unset.)
+                    note = ("MP4 samples could not be read: "
+                            f"{mp4info.sample_table_error}")
+                    mod.parse_notes.append(note)
+                    mod.parse_errors.append(note)
         else:
             mod = parse_bytes(data, source=source, container="raw")
         report.model = mod
 
-        modules = [l1_structural, l2_semantics, l3_loudness, container_checks]
+        modules = [l1_structural, l1_profile, l2_semantics, l3_loudness,
+                   container_checks]
         l3_rendered = None
         if ctx.toolchain is not None:
             # The L3 rendered-QC checks live in the Pro plugin (plugin seam,
@@ -209,6 +280,21 @@ def _profile_requirements(mod: m.IAMFModel, ctx: CheckContext,
             got = m.PROFILE_NAME.get(sh.primary_profile, sh.primary_profile)
             yield finding(ctx, "S-109", f"profile '{ctx.profile}' requires {want} profile",
                           expected=str(want), found=str(got), severity=Severity.FAIL)
+    # The two set-valued alternatives (check_profile_pack has already refused
+    # a pack that sets more than one of the three keys).
+    allowed = None
+    if "primary_profile_in" in require:
+        allowed = sorted(set(require["primary_profile_in"]))
+        want = "one of the profiles " + ", ".join(m.profile_label(v) for v in allowed)
+    elif "primary_profile_at_most" in require:
+        top = require["primary_profile_at_most"]
+        allowed = sorted(PROFILE_AT_MOST[top])
+        want = (f"{m.profile_label(top)} profile or simpler ("
+                + ", ".join(m.profile_label(v) for v in allowed) + ")")
+    if allowed is not None and sh is not None and sh.primary_profile not in allowed:
+        got = m.PROFILE_NAME.get(sh.primary_profile, sh.primary_profile)
+        yield finding(ctx, "S-109", f"profile '{ctx.profile}' requires {want}",
+                      expected=want, found=str(got), severity=Severity.FAIL)
     if "codec_id" in require:
         codecs = {cc.codec_id for cc in mod.codec_configs.values()}
         if require["codec_id"] not in codecs:

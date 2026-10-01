@@ -50,16 +50,18 @@ def q78(db: float) -> int:
 
 
 def obu(obu_type: int, payload: bytes, *, trim_start: int = 0,
-        trim_end: int = 0, flag: bool = False) -> bytes:
+        trim_end: int = 0, flag: bool = False, redundant: bool = False) -> bytes:
     """OBU framing. Non-zero trim_* sets trimming_status_flag and writes the
     num_samples_to_trim_at_end / _at_start leb128 fields (spec order).
 
     flag sets the same header bit with no fields after it: the bit is
     optional_fields_flag on a Mix Presentation and is_not_key_frame on a
-    Temporal Delimiter (IAMF v2.0.0 OBUHeader())."""
+    Temporal Delimiter (IAMF v2.0.0 OBUHeader()). redundant sets
+    obu_redundant_copy."""
     w = Writer()
     trimming = 1 if (trim_start or trim_end) else 0
-    w.u8(((obu_type & 0x1F) << 3) | ((trimming | int(flag)) << 1))
+    w.u8(((obu_type & 0x1F) << 3) | (int(redundant) << 2)
+         | ((trimming | int(flag)) << 1))
     fields = b""
     if trimming:
         fields = Writer().leb128(trim_end).leb128(trim_start).bytes()
@@ -82,7 +84,7 @@ class ChannelLayerSpec:
 class ElementSpec:
     id: int
     codec_config_id: int
-    kind: str                       # "channel" | "scene"
+    kind: str                       # "channel" | "scene" | "object"
     substream_ids: list[int]
     layers: list[ChannelLayerSpec] = field(default_factory=list)
     ambi_order: int | None = None
@@ -90,6 +92,14 @@ class ElementSpec:
     ambi_substream_count: int | None = None
     ambi_occ_override: int | None = None      # force a non-(N+1)^2 output_channel_count
     params: list[tuple[int, int]] = field(default_factory=list)  # (ptype, rate)
+    # kind "object": ObjectsConfig() = objects_config_size, num_objects, then
+    # objects_extension as objects_config_extension_bytes.
+    num_objects: int = 1
+    objects_extension: bytes = b""
+    # Written in place of the element's config, whatever the kind: lets a test
+    # put bytes there that are not the config the type calls for.
+    raw_config: bytes | None = None
+    audio_element_type: int | None = None     # force the 3-bit type (reserved values)
 
 
 @dataclass
@@ -111,6 +121,9 @@ class MixSpec:
     optional_fields: tuple[int, int] | None = None
     tags: list[tuple[str, str]] = field(default_factory=list)
     optional_fields_remaining: bytes = b""    # optional_fields_remaining_bytes
+    # Sub-mixes after the first (ae_ids is the first): one list of audio
+    # element ids each. Every sub-mix carries the same loudness layouts.
+    extra_sub_mixes: list[list[int]] = field(default_factory=list)
 
 
 @dataclass
@@ -130,6 +143,13 @@ class IAMFSpec:
     trim_end_last_tu: int = 0         # num_samples_to_trim_at_end on last-TU frames
     temporal_delimiters: bool = False             # a Temporal Delimiter opens every TU
     non_key_tus: list[int] = field(default_factory=list)   # TUs with is_not_key_frame=1
+    # Further Codec Config OBUs after the first, as (codec_config_id, codec_id).
+    extra_codec_configs: list[tuple[int, str]] = field(default_factory=list)
+    # Copies of the first Codec Config OBU with obu_redundant_copy set, each
+    # followed inside the OBU by redundant_codec_config_padding (bytes past
+    # the syntax, which obu_size may cover and parsers ignore).
+    redundant_codec_configs: int = 0
+    redundant_codec_config_padding: bytes = b""
 
     def copy(self) -> "IAMFSpec":
         import copy as _c
@@ -137,19 +157,22 @@ class IAMFSpec:
 
 
 # -- serialise --------------------------------------------------------------
-def _codec_config(spec: IAMFSpec) -> bytes:
+def _codec_config(spec: IAMFSpec, *, codec_config_id: int | None = None,
+                  codec_id: str | None = None, redundant: bool = False,
+                  padding: bytes = b"") -> bytes:
+    codec_id = spec.codec_id if codec_id is None else codec_id
     w = Writer()
-    w.leb128(spec.codec_config_id)
-    w.fourcc(spec.codec_id)
+    w.leb128(spec.codec_config_id if codec_config_id is None else codec_config_id)
+    w.fourcc(codec_id)
     w.leb128(spec.num_samples_per_frame)
     w.s16(0)                          # audio_roll_distance
-    if spec.codec_id == "ipcm":
+    if codec_id == "ipcm":
         w.u8(1)                       # sample_format_flags (little endian)
         w.u8(24)                      # sample_size
         w.u32(48000)                  # sample_rate
-    elif spec.codec_id == "Opus":
+    elif codec_id == "Opus":
         w.u8(1).u8(2).u16(312).u32(48000).s16(0).u8(0)
-    return obu(0, w.bytes())
+    return obu(0, w.bytes() + padding, redundant=redundant)
 
 
 def _param_definition(w: Writer, ptype: int | None, rate: int, mix_gain: bool):
@@ -168,7 +191,9 @@ def _param_definition(w: Writer, ptype: int | None, rate: int, mix_gain: bool):
 def _audio_element(e: ElementSpec) -> bytes:
     w = Writer()
     w.leb128(e.id)
-    w.u8((0 if e.kind == "channel" else 1) << 5)
+    ae_type = (e.audio_element_type if e.audio_element_type is not None
+               else 0 if e.kind == "channel" else 2 if e.kind == "object" else 1)
+    w.u8((ae_type & 0x7) << 5)
     w.leb128(e.codec_config_id)
     w.leb128(len(e.substream_ids))
     for sid in e.substream_ids:
@@ -176,7 +201,13 @@ def _audio_element(e: ElementSpec) -> bytes:
     w.leb128(len(e.params))
     for ptype, rate in e.params:
         _param_definition(w, ptype, rate, mix_gain=False)
-    if e.kind == "channel":
+    if e.raw_config is not None:
+        w.raw(e.raw_config)
+    elif e.kind == "object":
+        w.leb128(1 + len(e.objects_extension))    # objects_config_size
+        w.u8(e.num_objects)
+        w.raw(e.objects_extension)
+    elif e.kind == "channel":
         w.u8((len(e.layers) & 0x7) << 5)
         for layer in e.layers:
             lsl = layer.loudspeaker_layout
@@ -205,25 +236,26 @@ def _mix_presentation(mx: MixSpec, count_label: int = 1) -> bytes:
         w.cstring("en-us")
     for _ in range(count_label):
         w.cstring(mx.annotation)
-    w.leb128(1)                       # num_sub_mixes
-    w.leb128(len(mx.ae_ids))          # num_audio_elements
-    for ae_id in mx.ae_ids:
-        w.leb128(ae_id)
-        for _ in range(count_label):
-            w.cstring("element")
-        w.u8(0)                       # rendering_config headphones mode + reserved
-        w.leb128(0)                   # rendering_config_extension_size
-        _param_definition(w, None, 48000, mix_gain=True)   # element_mix_config
-    _param_definition(w, None, 48000, mix_gain=True)       # output_mix_config
-    w.leb128(len(mx.layouts))
-    for ly in mx.layouts:
-        info_type = 1 if ly.true_peak_db is not None else 0
-        w.u8((2 << 6) | ((ly.sound_system & 0xF) << 2))    # SS convention
-        w.u8(info_type)
-        w.s16(q78(ly.integrated_db))
-        w.s16(q78(ly.digital_db))
-        if info_type & 1:
-            w.s16(q78(ly.true_peak_db))
+    w.leb128(1 + len(mx.extra_sub_mixes))                  # num_sub_mixes
+    for ae_ids in [mx.ae_ids] + mx.extra_sub_mixes:
+        w.leb128(len(ae_ids))         # num_audio_elements
+        for ae_id in ae_ids:
+            w.leb128(ae_id)
+            for _ in range(count_label):
+                w.cstring("element")
+            w.u8(0)                   # rendering_config headphones mode + reserved
+            w.leb128(0)               # rendering_config_extension_size
+            _param_definition(w, None, 48000, mix_gain=True)   # element_mix_config
+        _param_definition(w, None, 48000, mix_gain=True)       # output_mix_config
+        w.leb128(len(mx.layouts))
+        for ly in mx.layouts:
+            info_type = 1 if ly.true_peak_db is not None else 0
+            w.u8((2 << 6) | ((ly.sound_system & 0xF) << 2))    # SS convention
+            w.u8(info_type)
+            w.s16(q78(ly.integrated_db))
+            w.s16(q78(ly.digital_db))
+            if info_type & 1:
+                w.s16(q78(ly.true_peak_db))
     if mx.optional_fields is None:
         return obu(2, w.bytes())
     w.u8(len(mx.tags))                # MixPresentationTags precede the optional fields
@@ -261,6 +293,11 @@ def build(spec: IAMFSpec) -> bytes:
     out += obu(31, Writer().fourcc("iamf").u8(spec.primary_profile)
                .u8(spec.additional_profile).bytes())       # sequence header
     out += _codec_config(spec)
+    for _ in range(spec.redundant_codec_configs):
+        out += _codec_config(spec, redundant=True,
+                             padding=spec.redundant_codec_config_padding)
+    for cc_id, codec_id in spec.extra_codec_configs:
+        out += _codec_config(spec, codec_config_id=cc_id, codec_id=codec_id)
     for e in spec.elements:
         out += _audio_element(e)
     for mx in spec.mixes:
