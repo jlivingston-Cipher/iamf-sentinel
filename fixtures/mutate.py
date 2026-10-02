@@ -7,6 +7,11 @@ ones expressible in the descriptor + frame index (topology inconsistency,
 dropped/duplicated substreams, ACN violations, dangling refs, truncation,
 loudness defaults). The pure essence-misroute F4 (identical descriptor,
 scrambled PCM) is out of scope for L1/L2 and belongs to L3 channel-identity.
+
+The last block mutates what IAMF v2.0.0 adds to the descriptors: an
+object-based element's ObjectsConfig and the RenderingConfig a Mix
+Presentation gives each element (S-210..S-216), and the mono / stereo coding of
+an object's LPCM substream (S-217).
 """
 
 from __future__ import annotations
@@ -191,6 +196,113 @@ def _mut_trim_fields_stripped():
     return wrap_mp4(B.build(_opus_trimmed()), elst=[(960, 0)])
 
 
+# -- object-based elements and rendering_config (IAMF v2.0.0) ---------------
+def _object(**kw):
+    return B.object_spec(**kw)
+
+
+def _rendering_of(spec, ae_id=300):
+    return spec.mixes[0].rendering.setdefault(ae_id, B.RenderingSpec())
+
+
+def _mut_object_count_zero():
+    s = _object()
+    s.elements[0].num_objects = 0                         # SHALL NOT be 0
+    return B.build(s)
+
+
+def _mut_object_element_parameters():
+    s = _object()
+    s.elements[0].params = [(1, 48000)]                   # num_parameters has to be 0
+    return B.build(s)
+
+
+def _mut_object_without_position():
+    s = _object()
+    _rendering_of(s).params = []                          # no position definition
+    _rendering_of(s).write_num_parameters = True
+    return B.build(s)
+
+
+def _mut_channel_with_position():
+    s = _channel("stereo")
+    _rendering_of(s).params = [B.PositionSpec(3, [(0, 0, 127)])]
+    return B.build(s)
+
+
+def _mut_mix_gain_in_rendering_config():
+    s = _object()
+    _rendering_of(s).params.append((0, b""))              # MIX_GAIN does not belong here
+    return B.build(s)
+
+
+def _mut_single_object_dual_definition():
+    s = _object()                                         # num_objects 1
+    _rendering_of(s).params = [B.PositionSpec(6, [(30, 0, 127), (-30, 0, 127)])]
+    return B.build(s)
+
+
+def _mut_dual_object_single_definition():
+    s = _object(dual=True)                                # num_objects 2
+    _rendering_of(s).params = [B.PositionSpec(4, [(0, 127, 0)])]
+    return B.build(s)
+
+
+def _mut_default_azimuth_out_of_range():
+    s = _object()
+    _rendering_of(s).params = [B.PositionSpec(3, [(200, 0, 127)])]   # > 180 degrees
+    return B.build(s)
+
+
+def _mut_default_cartesian_below_cube():
+    s = _object(ptype=4)
+    _rendering_of(s).params = [B.PositionSpec(4, [(-128, 0, 0)])]    # -128/127 < -1.0
+    return B.build(s)
+
+
+def _mut_gain_offset_reserved_type():
+    s = _channel("stereo")
+    _rendering_of(s).gain_offset = (2, b"\x01\x02")       # type 2 is reserved
+    return B.build(s)
+
+
+def _mut_gain_offset_range_inverted():
+    s = _channel("stereo")
+    _rendering_of(s).gain_offset = ("range", 0, 256, -256)   # min +1 dB, max -1 dB
+    return B.build(s)
+
+
+def _mut_binaural_filter_profile_reserved():
+    s = _channel("stereo")
+    _rendering_of(s).binaural_filter_profile = 3          # reserved
+    return B.build(s)
+
+
+def _mut_unknown_rendering_param_type():
+    s = _object()
+    _rendering_of(s).params.append((10, b"\xaa"))         # not defined by v2.0.0
+    return B.build(s)
+
+
+def _mut_headphones_rendering_mode_reserved():
+    s = _channel("stereo")
+    _rendering_of(s).headphones_rendering_mode = 3        # reserved
+    return B.build(s)
+
+
+def _mut_dual_object_mono_frames():
+    s = _object(dual=True)
+    s.elements[0].frame_channels = 1                      # two objects, mono LPCM frames
+    return B.build(s)
+
+
+def _mut_single_object_stereo_frames_mp4():
+    from .mp4wrap import wrap_mp4
+    s = _object()
+    s.elements[0].frame_channels = 2                      # one object, stereo LPCM frames
+    return wrap_mp4(B.build(s), sample_duration=s.num_samples_per_frame)
+
+
 MUTATIONS: list[Mutation] = [
     Mutation("coupled_count_wrong (7.1.4)", "S-201", _mut_coupled_wrong),
     Mutation("substream_count_wrong (5.1)", "S-201", _mut_substream_count_wrong),
@@ -217,6 +329,32 @@ MUTATIONS: list[Mutation] = [
     Mutation("elst_media_time_mismatch (F31)", "S-407", _mut_trim_elst_mismatch),
     Mutation("stts_ignores_end_trim (F31)", "S-408", _mut_trim_stts_short),
     Mutation("trim_fields_stripped (F31 fingerprint)", "S-409", _mut_trim_fields_stripped),
+    Mutation("object_count_zero", "S-210", _mut_object_count_zero),
+    Mutation("object_element_with_parameters", "S-210", _mut_object_element_parameters),
+    Mutation("object_without_position_definition", "S-211", _mut_object_without_position),
+    Mutation("channel_element_with_position_definition", "S-211",
+             _mut_channel_with_position),
+    Mutation("mix_gain_definition_in_rendering_config", "S-211",
+             _mut_mix_gain_in_rendering_config),
+    Mutation("single_object_with_dual_definition", "S-212",
+             _mut_single_object_dual_definition),
+    Mutation("dual_object_with_single_definition", "S-212",
+             _mut_dual_object_single_definition),
+    Mutation("default_azimuth_out_of_range", "S-213", _mut_default_azimuth_out_of_range),
+    Mutation("default_cartesian_below_the_cube", "S-213",
+             _mut_default_cartesian_below_cube),
+    Mutation("element_gain_offset_reserved_type", "S-214", _mut_gain_offset_reserved_type),
+    Mutation("element_gain_offset_range_inverted", "S-214",
+             _mut_gain_offset_range_inverted),
+    Mutation("binaural_filter_profile_reserved", "S-215",
+             _mut_binaural_filter_profile_reserved),
+    Mutation("unknown_rendering_param_definition_type", "S-216",
+             _mut_unknown_rendering_param_type),
+    Mutation("headphones_rendering_mode_reserved", "S-216",
+             _mut_headphones_rendering_mode_reserved),
+    Mutation("dual_object_with_mono_frames", "S-217", _mut_dual_object_mono_frames),
+    Mutation("single_object_with_stereo_frames (mp4)", "S-217",
+             _mut_single_object_stereo_frames_mp4),
 ]
 
 

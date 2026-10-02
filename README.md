@@ -9,9 +9,12 @@ no native build, no toolchain.
 
 > **Scope.** Checks are written against the **AOM IAMF v1.1.0** specification
 > and ISO/IEC 14496-12, and cross-checked against the AOM reference tools. The
-> tool reads IAMF v2.0.0 streams and recognises its six profiles and checks
-> their limits; object and position validation are not yet implemented. The
-> tool is **spec- and reference-validated, not platform-certified**: a
+> tool reads IAMF v2.0.0 streams, recognises its six profiles and checks their
+> limits, and reads object-based elements and the v2.0.0 rendering settings
+> (position definitions with their default positions, element gain offset,
+> binaural filter profile) and checks them; positions over time and parameter
+> blocks remain unvalidated. The tool is **spec- and reference-validated, not
+> platform-certified**: a
 > `--profile` name (e.g. `youtube`) applies the publicly-known shape
 > constraints for that target, not a guarantee of acceptance by that platform's
 > private ingest pipeline. A clean report means "conformant to the spec and the
@@ -73,6 +76,12 @@ keeps the embedded core finding-identical to this package.
 - **L2 — channel semantics (the corruption killer).** Substream topology vs declared layout
   (coupled-pairs-first invariant), coupled/mono sanity, ambisonics (N+1)²/ACN completeness,
   dropped/duplicated/spurious substreams, annotation-presence.
+- **Objects and rendering settings (`S-210`…`S-217`).** An object-based element's object count
+  and configuration; that each object element's rendering settings carry a position definition
+  of the right kind for its object count, with a default position in range; the element gain
+  offset; reserved rendering values that make a parser ignore a Mix Presentation; for LPCM,
+  that an object's substream carries one channel per object. Positions over time and parameter
+  blocks are not validated.
 - **Descriptor-level loudness & container checks that need no decoder.** Unmeasured `0.0` loudness,
   stereo-only loudness on multichannel programs, declared clipping, RFC 6381 codec-string casing,
   IAMF brand / fast-start / sample-entry, ISO-BMFF `iacb` extraction so L1/L2 run on IAMF-in-MP4
@@ -105,7 +114,7 @@ for the exact boundary.
 ## Fixtures
 
 `fixtures/` ships the clean-room IAMF serializer, the mutation suite (topology / drop / dup /
-ambisonics / truncation), and the corpus generator — so you can reproduce every check and build your
+ambisonics / truncation / objects and rendering settings), and the corpus generator — so you can reproduce every check and build your
 own regression corpus. These are part of the free core on purpose: they make the checks auditable and
 the check IDs trustworthy.
 

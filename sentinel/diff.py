@@ -1,9 +1,13 @@
 """Two-file diff (PRD R7): descriptor structure + rendered PCM.
 
-Descriptor half: profile, codecs, audio element topology, substream ids, and
-mix-presentation loudness layouts — proves a remux/re-encode preserved the
-*program structure*. Loudness values are compared with a tolerance
-(measurement noise is expected; structure is not).
+Descriptor half: profile, codecs, audio element topology (channel layout,
+ambisonics order, or object count), substream ids, the rendering settings
+IAMF v2.0.0 adds per element (position definition and its default position,
+element gain offset, binaural filter profile), and mix-presentation loudness
+layouts — proves a remux/re-encode preserved the *program structure*.
+Loudness values are compared with a tolerance (measurement noise is expected;
+structure is not). Positions over time (Parameter Block OBUs) are not
+compared.
 
 Rendered half (Phase 2, via the decoder oracle): decodes both files to a
 common layout and compares the audio itself — per-channel zero-lag
@@ -95,7 +99,51 @@ def _element_summary(ae: m.AudioElement) -> str:
     if ae.ambisonics:
         a = ae.ambisonics
         return f"scene/ambi order={a.order} occ={a.output_channel_count} sub={ae.num_substreams} ids={ae.audio_substream_ids}"
+    if ae.audio_element_type == m.AUDIO_ELEMENT_OBJECT:
+        n = ae.objects.num_objects if ae.objects else "unknown"
+        return f"object/objects={n} sub={ae.num_substreams} ids={ae.audio_substream_ids}"
     return f"type{ae.audio_element_type} sub={ae.num_substreams}"
+
+
+def _rendering_summary(rc: m.RenderingConfig) -> str:
+    """What IAMF v2.0.0 adds to a rendering_config, as one comparable string;
+    empty for the v1.1.0 form. parameter_id and parameter_rate are left out:
+    they name the parameter substream, not the rendering."""
+    parts = [f"{m.PARAM_TYPE_NAME[pd.param_definition_type]} default="
+             + "|".join(",".join(map(str, d)) for d in pd.defaults)
+             for pd in rc.position_definitions]
+    if rc.other_param_definition_types:
+        parts.append(f"other-param-types={rc.other_param_definition_types}")
+    g = rc.element_gain_offset
+    if g is not None:
+        gains = [v for v in (g.element_gain_offset, g.default_element_gain_offset,
+                             g.min_element_gain_offset, g.max_element_gain_offset)
+                 if v is not None]
+        parts.append(f"gain-offset type={g.element_gain_offset_type} {gains}")
+    if rc.binaural_filter_profile:
+        parts.append(f"binaural-filter-profile={rc.binaural_filter_profile}")
+    if not rc.extension_read:
+        parts.append("extension-not-read")
+    return " ".join(parts)
+
+
+def _rendering_index(mod: m.IAMFModel) -> dict[str, str]:
+    """Rendering summaries keyed by position: mix, sub-mix and element index
+    (the same alignment the audio elements use), the first OBU of each
+    mix_presentation_id standing for its redundant copies."""
+    out: dict[str, str] = {}
+    seen: set[int] = set()
+    for mp in mod.mix_presentations:
+        if mp.mix_presentation_id in seen:
+            continue
+        i = len(seen)
+        seen.add(mp.mix_presentation_id)
+        for j, sm in enumerate(mp.sub_mixes):
+            for k, rc in enumerate(sm.rendering_configs):
+                summary = _rendering_summary(rc)
+                if summary:
+                    out[f"rendering mix[{i}] sub-mix[{j}] element[{k}]"] = summary
+    return out
 
 
 RENDER_CORR_GATE = 0.98
@@ -207,6 +255,13 @@ def diff_files(path_a: str, path_b: str, *, toolchain: Any = None,
             sb = eb[i] if i < len(eb) else "(absent)"
             if sa != sb:
                 res.entries.append(DiffEntry("STRUCTURAL", f"audio_element[{i}]", sa, sb))
+
+    # rendering settings added by IAMF v2.0.0 (aligned by position)
+    ra, rb = _rendering_index(ma), _rendering_index(mb)
+    for where in sorted(set(ra) | set(rb)):
+        if ra.get(where) != rb.get(where):
+            res.entries.append(DiffEntry("STRUCTURAL", where,
+                                         ra.get(where, "(none)"), rb.get(where, "(none)")))
 
     # mix presentation loudness layouts (aligned by index)
     la = _loudness_index(ma)

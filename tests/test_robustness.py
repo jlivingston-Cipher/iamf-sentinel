@@ -6,7 +6,7 @@ malformed input yields a structured Report (findings or a captured
 `execution_error`), never a traceback out of `validate_bytes` and never a
 run past a per-case wall-clock bound.
 
-The seed corpus is the 7 valid specs, their MP4 wraps, and the 25
+The seed corpus is the 9 valid specs, their MP4 wraps, and the 41
 mutation-class outputs; the mutators are bit flips, truncation,
 length-field smashes, and byte splices, driven by a FIXED seed so the run
 is deterministic and CI-stable. Kept small enough for the unit suite; the
@@ -36,7 +36,7 @@ from sentinel.engine import validate_bytes
 from sentinel.parser import parse_bytes
 
 PER_CASE_TIMEOUT_S = 2.0
-ITERS_PER_SEED = 60          # 53 seeds x 60 x 3 entry points ~ 9.5k guarded calls
+ITERS_PER_SEED = 60          # 68 seeds x 60 x 3 entry points ~ 12.2k guarded calls
 
 
 class _Timeout(Exception):

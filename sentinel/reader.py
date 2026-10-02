@@ -57,6 +57,10 @@ class ByteReader:
     def u8(self) -> int:
         return self.read(1)[0]
 
+    def s8(self) -> int:
+        v = self.u8()
+        return v - 0x100 if v & 0x80 else v
+
     def u16(self) -> int:
         b = self.read(2)
         return (b[0] << 8) | b[1]

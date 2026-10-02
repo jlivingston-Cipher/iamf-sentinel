@@ -4,7 +4,8 @@ Check-ID taxonomy is a stable public contract (tool vendors cite
 "passes S-1xx…S-4xx at vX.Y" in self-certification):
 
     S-1xx  structural / L1        (OBU syntax, ordering, referential integrity)
-    S-2xx  channel-semantics / L2 (substream topology — the F4 killer)
+    S-2xx  channel-semantics / L2 (substream topology — the F4 killer;
+                                   S-21x object and rendering configuration)
     S-3xx  loudness (descriptor)  (declared-loudness sanity; measured render = Phase 2)
     S-4xx  container / profile     (MP4 brands, fast-start, RFC6381)
 
@@ -117,6 +118,47 @@ _reg(CheckSpec("S-207", "Frame/substream coverage", "L2", S.FAIL, ("F4",),
                "substream (dropped/duplicated substream detection)."))
 _reg(CheckSpec("S-208", "Annotation presence", "L2", S.WARN, ("F24",),
                "Mix-presentation/element annotations are not dropped or template placeholders."))
+
+# L2 object and rendering semantics (IAMF v2.0.0: object-based elements, and
+# the RenderingConfig a Mix Presentation gives each element). Descriptors,
+# plus LPCM frame sizes for S-217; positions over time (Parameter Block OBUs)
+# are not read.
+_reg(CheckSpec("S-210", "Object element configuration", "L2", S.FAIL,
+               description="An object-based element's num_objects is not 0 and its Audio "
+               "Element OBU has num_parameters = 0 (FAIL). num_objects above 2, and "
+               "more than one audio substream, have no meaning the specification "
+               "gives them (WARN)."))
+_reg(CheckSpec("S-211", "Position definition presence", "L2", S.FAIL,
+               description="The rendering_config of an object-based element carries a "
+               "position definition (param_definition_type 3-8); that of a channel-based "
+               "or scene-based element carries none; no rendering_config carries a "
+               "mix-gain, demixing, recon-gain or momentary-loudness definition (FAIL). "
+               "More than one position definition for one element is a WARN."))
+_reg(CheckSpec("S-212", "Position definition matches object count", "L2", S.FAIL,
+               description="A one-object element uses POLAR, CART8 or CART16; a two-object "
+               "element uses DUAL_POLAR, DUAL_CART8 or DUAL_CART16."))
+_reg(CheckSpec("S-213", "Default position within range", "L2", S.WARN,
+               description="A position definition's default azimuth is within -180..180 "
+               "degrees and its default elevation within -90..90 (parsers clip values "
+               "outside); a default Cartesian coordinate is not the one code that "
+               "normalises to below -1.0."))
+_reg(CheckSpec("S-214", "Element gain offset", "L2", S.WARN,
+               description="element_gain_offset_type is VALUE or RANGE (2-255 are "
+               "reserved); in a RANGE the lower bound is not positive and the upper "
+               "bound is not negative (parsers regard either as 0 dB)."))
+_reg(CheckSpec("S-215", "Binaural filter profile defined", "L2", S.WARN,
+               description="binaural_filter_profile is AMBIENT, DIRECT or REVERBERANT; "
+               "3 is reserved."))
+_reg(CheckSpec("S-216", "Mix Presentation not ignored by parsers", "L2", S.WARN,
+               description="No rendering_config makes parsers ignore its Mix "
+               "Presentation: headphones_rendering_mode is not the reserved value 3, "
+               "and every param_definition_type is one IAMF v2.0.0 defines."))
+_reg(CheckSpec("S-217", "Object substream channel count (LPCM)", "L2", S.FAIL,
+               description="The audio substream of a one-object element is coded mono "
+               "and that of a two-object element stereo. Read from frame sizes, so "
+               "judged for LPCM only: an LPCM frame is num_samples_per_frame samples "
+               "of one or two channels at sample_size bits. Frames of other codecs "
+               "are not decoded and not judged."))
 
 # L3 loudness (descriptor-derived; measured render is Phase 2)
 _reg(CheckSpec("S-301", "Loudness not unmeasured-default", "L3", S.FAIL, ("F7",),

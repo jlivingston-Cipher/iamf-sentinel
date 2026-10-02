@@ -57,6 +57,44 @@ def profile_label(value: int) -> str:
 PARAM_MIX_GAIN = 0
 PARAM_DEMIXING = 1
 PARAM_RECON_GAIN = 2
+# IAMF v2.0.0 adds 3..9 (Parameter Definition Types table, v2:2183-2214).
+# 3..8 are the position-based definitions of an object-based element; they
+# are carried in a Mix Presentation's RenderingConfig(), not in the Audio
+# Element OBU.
+PARAM_POLAR = 3
+PARAM_CART8 = 4
+PARAM_CART16 = 5
+PARAM_DUAL_POLAR = 6
+PARAM_DUAL_CART8 = 7
+PARAM_DUAL_CART16 = 8
+PARAM_MOMENTARY_LOUDNESS = 9
+
+PARAM_TYPE_NAME = {
+    0: "MIX_GAIN", 1: "DEMIXING", 2: "RECON_GAIN", 3: "POLAR", 4: "CART8",
+    5: "CART16", 6: "DUAL_POLAR", 7: "DUAL_CART8", 8: "DUAL_CART16",
+    9: "MOMENTARY_LOUDNESS",
+}
+
+# Objects positioned by each position-based definition. This is also the
+# num_objects each one is allowed for (v2:1554-1562).
+POSITION_PARAM_OBJECTS = {
+    PARAM_POLAR: 1, PARAM_CART8: 1, PARAM_CART16: 1,
+    PARAM_DUAL_POLAR: 2, PARAM_DUAL_CART8: 2, PARAM_DUAL_CART16: 2,
+}
+POLAR_PARAM_TYPES = (PARAM_POLAR, PARAM_DUAL_POLAR)
+
+# RenderingConfig() first byte (v2:1457-1461). In both two-bit fields the
+# value 3 is "Reserved for future use" (v2:1515, v2:1537). The specification
+# names the binaural filter profiles (v2:1534-1536) and describes the
+# headphones rendering modes without naming them (v2:1507-1513).
+DEFINED_HEADPHONES_RENDERING_MODES = (0, 1, 2)
+BINAURAL_FILTER_PROFILE_NAME = {0: "AMBIENT", 1: "DIRECT", 2: "REVERBERANT"}
+
+# element_gain_offset_type (Element Gain Offset Types table, v2:1612-1628);
+# 2..255 are reserved.
+GAIN_OFFSET_VALUE = 0
+GAIN_OFFSET_RANGE = 1
+GAIN_OFFSET_TYPE_NAME = {0: "VALUE", 1: "RANGE"}
 
 
 @dataclass
@@ -163,6 +201,61 @@ class AudioElement:
     # parser decides whether that is a note or a parse error).
     objects: ObjectsConfig | None = None
     header: OBUHeader | None = None
+    # num_parameters as coded. `parameters` holds only the demixing and
+    # recon-gain definitions; any other type is skipped and counted here.
+    num_parameters: int = 0
+
+
+@dataclass
+class PositionParamDefinition:
+    """A position-based parameter definition of a RenderingConfig()
+    (PolarParamDefinition() .. DualCart16ParamDefinition(), v2:1678-1876)."""
+    param_definition_type: int        # 3..8, a key of POSITION_PARAM_OBJECTS
+    param: ParamDefinition            # the ParamDefinition() fields it extends
+    # The default position of each object, as coded, in syntax order: one
+    # triple for the single-object types, two for the dual ones. Polar:
+    # (azimuth, elevation, distance) in degrees, degrees and 1/127 of the
+    # unit-sphere radius. Cartesian: (x, y, z) in 1/127 (8-bit) or 1/32767
+    # (16-bit) of the cube's half-edge.
+    defaults: list[tuple[int, int, int]] = field(default_factory=list)
+
+
+@dataclass
+class ElementGainOffsetConfig:
+    """ElementGainOffsetConfig() (v2:1593-1605). Gains are Q7.8 as coded."""
+    element_gain_offset_type: int                  # 0 VALUE, 1 RANGE, else reserved
+    element_gain_offset: int | None = None         # VALUE
+    default_element_gain_offset: int | None = None   # RANGE
+    min_element_gain_offset: int | None = None       # RANGE
+    max_element_gain_offset: int | None = None       # RANGE
+    extension_bytes: int = 0          # reserved type: element_gain_offset_bytes skipped
+
+
+@dataclass
+class RenderingConfig:
+    """RenderingConfig() of one audio element in one sub-mix (v2:1457-1491).
+
+    The first byte and rendering_config_extension_size are always read. What
+    IAMF v2.0.0 places inside the extension envelope follows; num_parameters
+    stays None when the envelope is empty (the v1.1.0 form, which v2.0.0
+    streams also use when they have nothing to put there).
+    """
+    headphones_rendering_mode: int                 # 2 bits; 3 is reserved
+    element_gain_offset_flag: bool
+    binaural_filter_profile: int                   # 2 bits; 3 is reserved
+    reserved: int                                  # 3 bits, ignored by parsers
+    rendering_config_extension_size: int
+    # False when the envelope bytes do not follow the v2.0.0 syntax: nothing
+    # below was read (the parser decides whether that is a note or a parse
+    # error), and no check judges this rendering config's parameters.
+    extension_read: bool = True
+    num_parameters: int | None = None
+    position_definitions: list[PositionParamDefinition] = field(default_factory=list)
+    # param_definition_type of every other definition, in file order; each is
+    # carried as param_definition_size + bytes and skipped (v2:1480-1483).
+    other_param_definition_types: list[int] = field(default_factory=list)
+    element_gain_offset: ElementGainOffsetConfig | None = None
+    extension_bytes: int = 0          # rendering_config_extension_bytes skipped
 
 
 @dataclass
@@ -183,6 +276,8 @@ class SubMix:
     audio_element_ids: list[int]
     num_layouts: int
     layouts: list[LoudnessLayout] = field(default_factory=list)
+    # One per entry of audio_element_ids, in the same order.
+    rendering_configs: list[RenderingConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -212,6 +307,9 @@ class AudioFrameRef:
     # zeroes these silently — a validator that drops them cannot notice).
     trim_start: int = 0            # num_samples_to_trim_at_start
     trim_end: int = 0              # num_samples_to_trim_at_end
+    # Bytes of the coded audio_frame itself: payload_len less the explicit
+    # audio_substream_id of an OBU of type 5. The frame is not decoded.
+    frame_bytes: int = 0
 
 
 @dataclass

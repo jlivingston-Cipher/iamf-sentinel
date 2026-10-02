@@ -100,6 +100,11 @@ class ElementSpec:
     # put bytes there that are not the config the type calls for.
     raw_config: bytes | None = None
     audio_element_type: int | None = None     # force the 3-bit type (reserved values)
+    # When set, every frame of this element's substreams is a whole LPCM frame
+    # of that many channels (num_samples_per_frame x channels x 3 bytes, the
+    # fixture codec being 24-bit). When None the frame is the 8-byte
+    # placeholder every other fixture uses, which is no whole LPCM frame.
+    frame_channels: int | None = None
 
 
 @dataclass
@@ -108,6 +113,89 @@ class LayoutSpec:
     integrated_db: float
     digital_db: float
     true_peak_db: float | None = None
+
+
+def polar_bytes(azimuth: int, elevation: int, distance: int) -> bytes:
+    """One object's default polar position: signed 9-bit azimuth, signed 8-bit
+    elevation, unsigned 7-bit distance, MSB first (PolarParamDefinition())."""
+    v = ((azimuth & 0x1FF) << 15) | ((elevation & 0xFF) << 7) | (distance & 0x7F)
+    return v.to_bytes(3, "big")
+
+
+@dataclass
+class PositionSpec:
+    """A position-based parameter definition inside a RenderingConfig().
+
+    ptype 3 POLAR, 4 CART8, 5 CART16, 6 DUAL_POLAR, 7 DUAL_CART8,
+    8 DUAL_CART16. defaults holds one (a, b, c) triple per object, coded
+    values: (azimuth, elevation, distance) or (x, y, z)."""
+    ptype: int
+    defaults: list[tuple[int, int, int]]
+    parameter_id: int = 2000
+    rate: int = 48000
+
+    def bytes(self) -> bytes:
+        w = Writer().leb128(self.ptype)
+        w.leb128(self.parameter_id).leb128(self.rate).u8(0x80)    # mode 1
+        for a, b, c in self.defaults:
+            if self.ptype in (3, 6):
+                w.raw(polar_bytes(a, b, c))
+            elif self.ptype in (4, 7):
+                w.u8(a).u8(b).u8(c)
+            else:
+                w.s16(a).s16(b).s16(c)
+        return w.bytes()
+
+
+@dataclass
+class RenderingSpec:
+    """RenderingConfig() of one element of a sub-mix (IAMF v2.0.0).
+
+    The default is the v1.1.0 form: mode 0, an empty extension envelope. The
+    envelope is written, with num_parameters first, as soon as there is
+    anything to put in it."""
+    headphones_rendering_mode: int = 0
+    binaural_filter_profile: int = 0
+    reserved: int = 0                              # the 3 reserved bits
+    # In file order: a PositionSpec, or (param_definition_type, bytes) for a
+    # definition carried as param_definition_size + param_definition_bytes.
+    params: list = field(default_factory=list)
+    # ("value", q78) | ("range", default, min, max) | (type, bytes) for a
+    # reserved element_gain_offset_type carried as size + bytes.
+    gain_offset: tuple | None = None
+    gain_offset_flag: bool | None = None           # force the flag bit
+    extension_bytes: bytes = b""                   # rendering_config_extension_bytes
+    write_num_parameters: bool = False             # num_parameters = 0 on its own
+    raw_extension: bytes | None = None             # the whole envelope, verbatim
+
+    def bytes(self) -> bytes:
+        flag = (self.gain_offset is not None if self.gain_offset_flag is None
+                else self.gain_offset_flag)
+        w = Writer().u8(((self.headphones_rendering_mode & 0x3) << 6) | (int(flag) << 5)
+                        | ((self.binaural_filter_profile & 0x3) << 3)
+                        | (self.reserved & 0x7))
+        ext = Writer()
+        if self.raw_extension is not None:
+            ext.raw(self.raw_extension)
+        elif (self.params or self.gain_offset is not None or self.extension_bytes
+              or self.write_num_parameters):
+            ext.leb128(len(self.params))
+            for p in self.params:
+                if isinstance(p, PositionSpec):
+                    ext.raw(p.bytes())
+                else:
+                    ptype, body = p
+                    ext.leb128(ptype).leb128(len(body)).raw(body)
+            if self.gain_offset is not None:
+                kind, *vals = self.gain_offset
+                if kind == "value":
+                    ext.u8(0).s16(vals[0])
+                elif kind == "range":
+                    ext.u8(1).s16(vals[0]).s16(vals[1]).s16(vals[2])
+                else:
+                    ext.u8(kind).leb128(len(vals[0])).raw(vals[0])
+            ext.raw(self.extension_bytes)
+        return w.leb128(len(ext.b)).raw(ext.bytes()).bytes()
 
 
 @dataclass
@@ -124,6 +212,9 @@ class MixSpec:
     # Sub-mixes after the first (ae_ids is the first): one list of audio
     # element ids each. Every sub-mix carries the same loudness layouts.
     extra_sub_mixes: list[list[int]] = field(default_factory=list)
+    # audio_element_id -> its RenderingConfig(); an element not listed gets
+    # the v1.1.0 form (mode 0, empty extension).
+    rendering: dict[int, RenderingSpec] = field(default_factory=dict)
 
 
 @dataclass
@@ -243,8 +334,7 @@ def _mix_presentation(mx: MixSpec, count_label: int = 1) -> bytes:
             w.leb128(ae_id)
             for _ in range(count_label):
                 w.cstring("element")
-            w.u8(0)                   # rendering_config headphones mode + reserved
-            w.leb128(0)               # rendering_config_extension_size
+            w.raw(mx.rendering.get(ae_id, RenderingSpec()).bytes())  # rendering_config
             _param_definition(w, None, 48000, mix_gain=True)   # element_mix_config
         _param_definition(w, None, 48000, mix_gain=True)       # output_mix_config
         w.leb128(len(mx.layouts))
@@ -274,13 +364,16 @@ def _audio_frames(spec: IAMFSpec) -> bytes:
         declared.extend(e.substream_ids)
     declared = [s for s in declared if s not in spec.drop_frame_substreams]
     pcm = b"\x00" * 8
+    whole = {sid: b"\x00" * (spec.num_samples_per_frame * e.frame_channels * 3)
+             for e in spec.elements if e.frame_channels is not None
+             for sid in e.substream_ids}
     for _tu in range(spec.temporal_units):
         ts = spec.trim_start_first_tu if _tu == 0 else 0
         te = spec.trim_end_last_tu if _tu == spec.temporal_units - 1 else 0
         if spec.temporal_delimiters:
             out += obu(4, b"", flag=_tu in spec.non_key_tus)
         for sid in declared:
-            payload = Writer().leb128(sid).raw(pcm).bytes()
+            payload = Writer().leb128(sid).raw(whole.get(sid, pcm)).bytes()
             out += obu(5, payload, trim_start=ts, trim_end=te)
         for sid in spec.extra_frames:
             payload = Writer().leb128(sid).raw(pcm).bytes()
@@ -347,8 +440,38 @@ def scene_spec(order: int, *, profile: int = 1) -> IAMFSpec:
     )
 
 
+def object_spec(*, dual: bool = False, ptype: int | None = None,
+                profile: int = 4) -> IAMFSpec:
+    """One object-based element (one object, or two with dual=True) and the
+    position definition its rendering_config has to carry. ptype defaults to
+    POLAR (3) or DUAL_POLAR (6); pass 4/5 or 7/8 for the Cartesian forms. Its
+    frames are whole LPCM frames, mono for one object and stereo for two."""
+    if ptype is None:
+        ptype = 6 if dual else 3
+    if ptype in (3, 6):
+        defaults = [(30, 10, 127), (-30, 10, 127)]         # azimuth, elevation, distance
+    elif ptype in (4, 7):
+        defaults = [(-64, 127, 0), (64, 127, 0)]           # x, y, z in 1/127
+    else:
+        defaults = [(-16384, 32767, 0), (16384, 32767, 0)]   # x, y, z in 1/32767
+    defaults = defaults[: 2 if ptype >= 6 else 1]
+    layouts = [LayoutSpec(0, -18.0, -6.0), LayoutSpec(1, -19.0, -7.0)]
+    n = 2 if dual else 1
+    return IAMFSpec(
+        primary_profile=profile, additional_profile=profile,
+        num_samples_per_frame=8,       # short whole frames: 24 or 48 bytes each
+        elements=[ElementSpec(300, 0, "object", [0], num_objects=n, frame_channels=n)],
+        mixes=[MixSpec(42, [300], "Fixture Objects", layouts,
+                       rendering={300: RenderingSpec(
+                           headphones_rendering_mode=1,
+                           params=[PositionSpec(ptype, defaults)])})],
+    )
+
+
 def all_valid_specs() -> dict[str, IAMFSpec]:
     d = {name: channel_spec(name) for name in _CHANNEL_LAYOUTS}
     d["foa"] = scene_spec(1)
     d["3oa"] = scene_spec(3)
+    d["object"] = object_spec()
+    d["dual-object"] = object_spec(dual=True)
     return d

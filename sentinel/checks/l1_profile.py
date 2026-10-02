@@ -32,10 +32,12 @@ count; values that are reserved only in the specification version a profile
 0..2 was defined in, other than the object element type and the expanded
 layouts 13..19 (which are flagged as unsettled, not judged); whether a Mix
 Presentation that references a reserved audio_element_type (3..7) is outside
-every profile; the value of num_objects (0 is forbidden by v2:1316 — here it
-is only an unknown channel count, silently; 3..255 are counted as given);
-whether any Mix Presentation complies with additional_profile; and the
-remaining two-codec rules of v2:3145-3147.
+every profile; the value of num_objects (S-210 judges it; here 0 is only an
+unknown channel count, silently, and 3..255 are counted as given); whether a
+Mix Presentation that parsers are told to ignore for a reserved rendering
+value (S-216) still counts as one that fits a profile; whether any Mix
+Presentation complies with additional_profile; and the remaining two-codec
+rules of v2:3145-3147.
 """
 
 from __future__ import annotations

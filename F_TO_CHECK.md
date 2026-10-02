@@ -103,8 +103,12 @@ more than that: neither FFmpeg fix carries a `Reported-by:` trailer.
 `S-101` sequence-header presence/order · `S-102` profile recognised ·
 `S-103` codec-config validity · `S-104/S-105` element/mix presence ·
 `S-106` referential integrity · `S-107` OBU ordering · `S-108` clean parse ·
-`S-109` profile constraints · `S-401` IAMF brand ·
-`S-402` fast-start · `S-404` IAMF sample entry.
+`S-109` profile constraints · `S-210` object element configuration ·
+`S-211` position definition presence · `S-212` position definition matches object count ·
+`S-213` default position within range · `S-214` element gain offset ·
+`S-215` binaural filter profile defined · `S-216` Mix Presentation not ignored by parsers ·
+`S-217` object substream channel count (LPCM) ·
+`S-401` IAMF brand · `S-402` fast-start · `S-404` IAMF sample entry.
 
 Three of these do more than their one-line names say:
 
@@ -115,7 +119,8 @@ Three of these do more than their one-line names say:
 - **`S-108` clean parse.** Every genuine parse error is reported, whatever its kind: a truncated
   or oversized OBU; a field that cannot be read inside an OBU; a reserved header bit set where
   IAMF v2.0.0 requires 0; a Mix Presentation optional-fields envelope too short to hold its
-  fields; an ObjectsConfig that cannot be read in a sequence that declares profile 3, 4 or 5;
+  fields; an ObjectsConfig, or the extension bytes of a `rendering_config`, that cannot be
+  read in a sequence that declares profile 3, 4 or 5;
   and, in MP4, a parse problem met while walking the samples, or sample tables that cannot be
   followed (a fragmented file's samples are not walked). What is passed over for forward
   compatibility — an unknown OBU type, a config that is not modelled — is a note, not a finding.
@@ -145,15 +150,59 @@ Three of these do more than their one-line names say:
   optional-fields envelope and its two preferred-renderer bytes are read; an envelope too short
   to hold them is an `S-108` finding. The values are recorded, not judged.
 - **The six profiles and their limits** — `S-102` and `S-109`, as above.
-- **ObjectsConfig object counts.** `num_objects` is read from each object-based element and
-  counted, one channel per object, toward the profile limits. The value itself is not judged. An
-  ObjectsConfig that cannot be read, in a sequence that declares profile 3, 4 or 5, is an `S-108`
-  finding.
+- **Object-based elements.** `ObjectsConfig` is read from each object-based element inside its
+  own size field. `num_objects` is counted, one channel per object, toward the profile limits,
+  and judged by `S-210`: 0 is a FAIL; a count above 2 is a WARN, because the specification
+  gives a meaning to 1 and 2 only. `S-210` also fails an object-based element whose Audio
+  Element OBU has `num_parameters` other than 0, and warns when the element declares more than
+  one audio substream. An ObjectsConfig that cannot be read, in a sequence that declares
+  profile 3, 4 or 5, is an `S-108` finding. `S-217` checks that a one-object element's
+  substream is coded mono and a two-object element's stereo — for LPCM only, where the size of
+  a frame gives its channel count (FAIL); it runs on raw IAMF and on MP4-carried frames alike,
+  and not on a fragmented MP4, whose samples are not walked.
+- **Rendering settings.** For every element of every sub-mix, the `rendering_config` is read in
+  full: `headphones_rendering_mode`, `element_gain_offset_flag` and `binaural_filter_profile`
+  from its first byte and, inside the extension size field, `num_parameters`, the six
+  position parameter definitions (polar, 8-bit and 16-bit Cartesian, each for one object or
+  two) with their default positions, and the element gain offset (a value or a range). Bytes
+  after those are reserved and skipped. A `rendering_config` with an empty extension — the
+  v1.1.0 form — reads exactly as before. Extension bytes that are not this syntax are an
+  `S-108` finding in a sequence that declares profile 3, 4 or 5, and a note otherwise (before
+  v2.0.0 those bytes were reserved). The checks:
+  - `S-211` — an object-based element's `rendering_config` carries a position definition and a
+    channel-based or scene-based element's carries none; no `rendering_config` carries a
+    mix-gain, demixing, recon-gain or momentary-loudness definition (FAIL). More than one
+    position definition for one element is a WARN: the specification asks for one and does not
+    say "exactly".
+  - `S-212` — the position definition is a single-object one for `num_objects` = 1 and a
+    dual-object one for `num_objects` = 2 (FAIL).
+  - `S-213` — a default azimuth outside −180..180° or a default elevation outside −90..90°,
+    which a parser clips; a default Cartesian coordinate at the one code (−128, −32768) that
+    normalises to below −1.0 (WARN).
+  - `S-214` — a reserved `element_gain_offset_type`; in a range, a positive lower bound or a
+    negative upper bound, which a parser regards as 0 dB (WARN).
+  - `S-215` — the reserved `binaural_filter_profile` value 3 (WARN).
+  - `S-216` — a Mix Presentation that parsers are told to ignore: a `rendering_config` with the
+    reserved `headphones_rendering_mode` 3, or with a parameter definition type that IAMF
+    v2.0.0 does not define (WARN). The unknown type is skipped by its size and reported; it is
+    not passed over silently.
 
-What it does **not** yet validate: the contents of object-based elements beyond that count;
-rendering and position parameters; parameter-block payloads; the Metadata OBU. These are passed
-over inside the size fields that carry them, without a finding, so a clean report says nothing
-about them. The Pro rendered checks (`S-31x`/`S-32x`) are not yet calibrated for v2.0.0 content.
+  The parsed values are shown in the text, HTML and JSON reports and compared by `sentinel diff`.
+
+  Three things are deliberately not judged: an element of a reserved `audio_element_type`
+  (3–7), which parsers are told to ignore — it is kept and noted, and its substreams still
+  count; a type-2 element whose bytes are not an ObjectsConfig; and a `rendering_config` whose
+  extension bytes are not the v2.0.0 syntax.
+
+What it does **not** yet validate: positions over time — a position definition names a
+parameter substream, and the Parameter Block OBUs that carry it are not read, so only the
+default position is checked; parameter-block payloads of any kind, and the `parameter_id`s that
+tie them to their definitions; whether an object's audio substream is coded mono or stereo as
+its `num_objects` requires when the codec is Opus, AAC-LC or FLAC (coded frames are not
+decoded; `S-217` covers LPCM only); whether a Mix Presentation that `S-216` reports still
+counts toward the profile rules of `S-109`; the Metadata OBU. What is not read is passed over
+inside the size fields that carry it, without a finding, so a clean report says nothing about
+it. The Pro rendered checks (`S-31x`/`S-32x`) are not yet calibrated for v2.0.0 content.
 Anything IAMF v2.0.0 adds that is not in the list above is not validated.
 
 ## Pro checks: source-referenced (S-33x) and intent-referenced (S-34x)

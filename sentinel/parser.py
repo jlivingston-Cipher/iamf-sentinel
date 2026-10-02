@@ -25,7 +25,8 @@ from . import model as m
 _RESERVED_BIT6_TYPES = (m.OBU_SEQUENCE_HEADER, m.OBU_CODEC_CONFIG,
                         m.OBU_AUDIO_ELEMENT, m.OBU_PARAMETER_BLOCK)
 
-# Profiles whose defining specification version has object-based elements
+# Profiles whose defining specification version is IAMF v2.0.0, and so has
+# object-based elements and the v2.0.0 RenderingConfig() syntax
 # (Base-Advanced, Advanced-1, Advanced-2; v2:3204, v2:3223, v2:3247).
 _OBJECT_PROFILES = (3, 4, 5)
 
@@ -229,7 +230,7 @@ class IAMFParser:
         ae = m.AudioElement(
             audio_element_id=ae_id, audio_element_type=ae_type, codec_config_id=cc_id,
             num_substreams=num_substreams, audio_substream_ids=substream_ids,
-            parameters=params, header=hdr,
+            parameters=params, header=hdr, num_parameters=num_parameters,
         )
         if ae_type == m.AUDIO_ELEMENT_CHANNEL:
             self._parse_scalable_channel_layout(r, ae)
@@ -315,11 +316,9 @@ class IAMFParser:
                                  r.abs_pos)
             num_objects = r.subreader(size).u8()
         except ParseError as e:
-            sh = self.model.sequence_header
             note = (f"audio_element {ae.audio_element_id}: type 2 config is not an "
                     f"ObjectsConfig ({e}); object count unknown")
-            if sh is not None and (sh.primary_profile in _OBJECT_PROFILES
-                                   or sh.additional_profile in _OBJECT_PROFILES):
+            if self._v2_profile_declared():
                 self._parse_error(note)
             else:
                 self.model.parse_notes.append(note)
@@ -339,15 +338,13 @@ class IAMFParser:
         for _ in range(num_sub_mixes):
             num_ae = r.uleb128()
             ae_ids: list[int] = []
+            rendering_configs: list[m.RenderingConfig] = []
             for _j in range(num_ae):
                 ae_id = r.uleb128()
                 ae_ids.append(ae_id)
                 for _k in range(count_label):
                     r.cstring()               # localized element annotation
-                # rendering_config
-                r.u8()                        # headphones_rendering_mode + reserved
-                ext_size = r.uleb128()
-                r.read(ext_size)
+                rendering_configs.append(self._parse_rendering_config(r, mp_id, ae_id))
                 # element_mix_config: MixGainParamDefinition
                 self._parse_param_definition(r, None, mix_gain=True)
             # output_mix_config: MixGainParamDefinition
@@ -368,7 +365,7 @@ class IAMFParser:
                     label = f"reserved-layout-{layout_type}"
                 ll = self._parse_loudness_info(r, layout_type, sound_system, label)
                 layouts.append(ll)
-            sub_mixes.append(m.SubMix(ae_ids, num_layouts, layouts))
+            sub_mixes.append(m.SubMix(ae_ids, num_layouts, layouts, rendering_configs))
         mp = m.MixPresentation(
             mix_presentation_id=mp_id, count_label=count_label,
             language_labels=language_labels, annotations=annotations,
@@ -394,6 +391,116 @@ class IAMFParser:
             mp.optional_fields_size = size
             mp.preferred_loudspeaker_renderer = fields.u8()
             mp.preferred_binaural_renderer = fields.u8()
+
+    def _v2_profile_declared(self) -> bool:
+        """Whether the sequence declares a profile that IAMF v2.0.0 defines
+        (3..5), as primary or additional: object-based elements and the
+        v2.0.0 RenderingConfig() syntax exist in that version only."""
+        sh = self.model.sequence_header
+        return sh is not None and (sh.primary_profile in _OBJECT_PROFILES
+                                   or sh.additional_profile in _OBJECT_PROFILES)
+
+    def _parse_rendering_config(self, r: ByteReader, mp_id: int,
+                                ae_id: int) -> m.RenderingConfig:
+        """RenderingConfig() (IAMF v2.0.0, v2:1457-1491).
+
+        rendering_config_extension_size is an envelope, and v2.0.0 puts
+        num_parameters, the parameter definitions and the element gain offset
+        inside it (v2:1543, v2:1585). Bytes past them are reserved and skipped
+        with the envelope, so whatever the envelope holds, the fields after it
+        are found where they were before.
+
+        An empty envelope is the v1.1.0 form and reads as before: no
+        parameters. v2.0.0 streams use it too when they have nothing to put
+        there.
+
+        Envelope bytes that do not follow the v2.0.0 syntax leave the config
+        in the model with extension_read False. Whether that is an error
+        depends on what the sequence declares, as for ObjectsConfig(). Before
+        v2.0.0 these bytes were reserved and the three bits now read as
+        element_gain_offset_flag and binaural_filter_profile were reserved
+        too, so a stream that declares no profile from 3..5 may carry
+        anything there: a note. When either profile is one that v2.0.0
+        defines, the syntax is required and the failure is a genuine parse
+        error (S-108).
+        """
+        mode, gain_flag, filter_profile, reserved = split_bits(r.u8(), 2, 1, 2, 3)
+        size = r.uleb128()
+        envelope = r.subreader(size)
+        rc = m.RenderingConfig(
+            headphones_rendering_mode=mode, element_gain_offset_flag=bool(gain_flag),
+            binaural_filter_profile=filter_profile, reserved=reserved,
+            rendering_config_extension_size=size)
+        if size == 0 and not gain_flag:
+            return rc
+        try:
+            if size == 0:
+                raise ParseError("element_gain_offset_flag is set but "
+                                 "rendering_config_extension_size 0 leaves no room "
+                                 "for an ElementGainOffsetConfig", envelope.abs_pos)
+            num_parameters = envelope.uleb128()
+            positions: list[m.PositionParamDefinition] = []
+            others: list[int] = []
+            for _ in range(num_parameters):
+                ptype = envelope.uleb128()
+                n_objects = m.POSITION_PARAM_OBJECTS.get(ptype)
+                if n_objects is None:
+                    # Every other type, defined or not, is param_definition_size
+                    # and that many bytes (v2:1480-1483).
+                    envelope.read(envelope.uleb128())
+                    others.append(ptype)
+                    continue
+                pd = self._parse_param_definition(envelope, ptype, mix_gain=False)
+                positions.append(m.PositionParamDefinition(
+                    ptype, pd, [self._read_position(envelope, ptype)
+                                for _ in range(n_objects)]))
+            gain = self._parse_element_gain_offset(envelope) if gain_flag else None
+        except ParseError as e:
+            rc.extension_read = False
+            note = (f"mix_presentation {mp_id} / audio_element {ae_id}: "
+                    "rendering_config extension does not follow the IAMF v2.0.0 "
+                    f"syntax ({e}); its parameters are not read")
+            if self._v2_profile_declared():
+                self._parse_error(note)
+            else:
+                self.model.parse_notes.append(note)
+            return rc
+        rc.num_parameters = num_parameters
+        rc.position_definitions = positions
+        rc.other_param_definition_types = others
+        rc.element_gain_offset = gain
+        rc.extension_bytes = envelope.remaining()
+        return rc
+
+    @staticmethod
+    def _read_position(r: ByteReader, ptype: int) -> tuple[int, int, int]:
+        """The default position of one object, as coded."""
+        if ptype in m.POLAR_PARAM_TYPES:
+            # signed 9-bit azimuth, signed 8-bit elevation, unsigned 7-bit
+            # distance, packed MSB-first into three bytes (v2:1679-1681)
+            b = r.read(3)
+            v = (b[0] << 16) | (b[1] << 8) | b[2]
+            azimuth, elevation, distance = v >> 15, (v >> 7) & 0xFF, v & 0x7F
+            return (azimuth - 0x200 if azimuth & 0x100 else azimuth,
+                    elevation - 0x100 if elevation & 0x80 else elevation, distance)
+        if ptype in (m.PARAM_CART8, m.PARAM_DUAL_CART8):
+            return (r.s8(), r.s8(), r.s8())           # v2:1772-1774
+        return (r.s16(), r.s16(), r.s16())            # v2:1804-1806
+
+    @staticmethod
+    def _parse_element_gain_offset(r: ByteReader) -> m.ElementGainOffsetConfig:
+        """ElementGainOffsetConfig() (v2:1593-1605)."""
+        cfg = m.ElementGainOffsetConfig(element_gain_offset_type=r.u8())
+        if cfg.element_gain_offset_type == m.GAIN_OFFSET_VALUE:
+            cfg.element_gain_offset = r.s16()
+        elif cfg.element_gain_offset_type == m.GAIN_OFFSET_RANGE:
+            cfg.default_element_gain_offset = r.s16()
+            cfg.min_element_gain_offset = r.s16()
+            cfg.max_element_gain_offset = r.s16()
+        else:                                         # reserved type: size + bytes
+            cfg.extension_bytes = r.uleb128()
+            r.read(cfg.extension_bytes)
+        return cfg
 
     def _parse_loudness_info(self, r: ByteReader, layout_type: int,
                              sound_system: int | None,
@@ -435,6 +542,7 @@ class IAMFParser:
             payload_len=hdr.payload_len, first_temporal=first_temporal,
             trim_start=hdr.num_samples_to_trim_at_start,
             trim_end=hdr.num_samples_to_trim_at_end,
+            frame_bytes=r.remaining(),
         ))
 
 
