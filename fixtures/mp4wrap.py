@@ -48,12 +48,17 @@ def split_stream(data: bytes) -> tuple[bytes, list[bytes]]:
 
     TU boundary rule: a new temporal unit starts at a temporal-delimiter OBU,
     or when an audio frame repeats a substream id already seen in the current
-    unit (fixture streams carry one frame per substream per TU).
+    unit (fixture streams carry one frame per substream per TU). Parameter
+    Block OBUs are IA data: one met after a unit's frames opens the next unit
+    (the specification puts a unit's parameter blocks before its frames), so
+    the boundary is placed at the first such block rather than at the frame
+    that repeats a substream id.
     """
     p, n = 0, len(data)
     desc_end = None
     tu_bounds: list[int] = []
     seen: set[int] = set()
+    pending: int | None = None          # a parameter block that may open the next TU
     while p + 2 <= n:
         b0 = data[p]
         obu_type = b0 >> 3
@@ -63,12 +68,18 @@ def split_stream(data: bytes) -> tuple[bytes, list[bytes]]:
         body_start = q
         if q + size > n:
             break
-        if 5 <= obu_type <= 23 or obu_type == 4:
+        if 3 <= obu_type <= 23:
             if desc_end is None:
                 desc_end = p
             if obu_type == 4:                      # temporal delimiter
                 tu_bounds.append(p)
                 seen = set()
+                pending = None
+            elif obu_type == 3:                    # parameter block
+                if seen and pending is None:
+                    pending = p
+                elif not seen and not tu_bounds:
+                    tu_bounds.append(p)
             else:
                 fp = body_start
                 if trimming:
@@ -79,11 +90,12 @@ def split_stream(data: bytes) -> tuple[bytes, list[bytes]]:
                     fp += ext
                 sid = obu_type - 6 if obu_type >= 6 else _read_uleb(data, fp)[0]
                 if sid in seen:
-                    tu_bounds.append(p)
+                    tu_bounds.append(pending if pending is not None else p)
                     seen = set()
                 elif not seen and not tu_bounds:
                     tu_bounds.append(p)
                 seen.add(sid)
+                pending = None
         p = q + size
     if desc_end is None:
         return data, []

@@ -83,6 +83,151 @@ def _rendering_facts(mod: m.IAMFModel) -> list[dict]:
     return out
 
 
+def _declaration_fact(d: m.ParamDeclaration) -> dict:
+    out: dict = {"role": d.role}
+    if d.mix_presentation_id is not None:
+        out["mix_presentation_id"] = d.mix_presentation_id
+        out["sub_mix"] = d.sub_mix_index + 1
+    if d.audio_element_id is not None:
+        out["audio_element_id"] = d.audio_element_id
+    if d.layout_index is not None:
+        out["layout"] = d.layout_index + 1
+    if d.redundant_copy:
+        out["redundant_copy"] = True
+    return out
+
+
+def _range(values: list) -> dict | None:
+    return {"min": min(values), "max": max(values)} if values else None
+
+
+def _parameter_facts(mod: m.IAMFModel) -> list[dict]:
+    """One entry per parameter_id the stream declares or carries blocks for,
+    present only when the stream has Parameter Block OBUs: the definition
+    (from its first declaration; every declaration is listed, and
+    declarations_differ says whether they agree), then what the blocks that
+    were read hold: counts, total duration in ticks, animation types seen
+    and the range of the values, by type. Values are as coded, except gains
+    (dB) and loudness (LKFS); sub_mix and layout count from 1."""
+    if not mod.parameter_blocks:
+        return []
+    blocks: dict[int, list[m.ParameterBlock]] = {}
+    for b in mod.parameter_blocks:
+        blocks.setdefault(b.parameter_id, []).append(b)
+    out: list[dict] = []
+    for pid in list(mod.parameter_definitions) + [p for p in blocks
+                                                  if p not in mod.parameter_definitions]:
+        decls = mod.parameter_definitions.get(pid, [])
+        entry: dict = {"parameter_id": pid, "declared": [_declaration_fact(d) for d in decls]}
+        pd = decls[0].param if decls else None
+        if pd is not None:
+            entry["type"] = m.PARAM_TYPE_NAME.get(pd.param_definition_type,
+                                                  pd.param_definition_type)
+            entry["parameter_rate"] = pd.parameter_rate
+            entry["param_definition_mode"] = pd.param_definition_mode
+            if pd.param_definition_mode == 0:
+                entry["duration"] = pd.duration
+                entry["constant_subblock_duration"] = pd.constant_subblock_duration
+                if pd.constant_subblock_duration == 0:
+                    entry["subblock_durations"] = list(pd.subblock_durations)
+            if pd.default_mix_gain is not None:
+                entry["default_mix_gain_db"] = pd.default_mix_gain / 256.0
+            if len(decls) > 1:
+                entry["declarations_differ"] = any(
+                    (d.param.param_definition_type, d.param.parameter_rate,
+                     d.param.param_definition_mode, d.param.duration,
+                     d.param.constant_subblock_duration, d.param.subblock_durations)
+                    != (pd.param_definition_type, pd.parameter_rate,
+                        pd.param_definition_mode, pd.duration,
+                        pd.constant_subblock_duration, pd.subblock_durations)
+                    for d in decls[1:])
+        bs = blocks.get(pid, [])
+        entry["blocks"] = len(bs)
+        unread = [b for b in bs if not b.payload_read]
+        if unread:
+            entry["blocks_not_read"] = len(unread)
+        read = [b for b in bs if b.payload_read]
+        if not read:
+            out.append(entry)
+            continue
+        durations = [m.parameter_block_timing(b, pd)[0] for b in read]
+        durations = [d for d in durations if d is not None]
+        if durations:
+            entry["duration_ticks"] = sum(durations)
+            entry["block_duration"] = _range(durations)
+        entry["subblocks"] = sum(len(b.subblocks) for b in read)
+        subblocks = [sb.data for b in read for sb in b.subblocks if sb.data is not None]
+        anims = sorted({d.animation_type for d in subblocks if hasattr(d, "animation_type")})
+        if anims:
+            entry["animation_types"] = [m.ANIMATION_TYPE_NAME.get(a, a) for a in anims]
+        ptype = pd.param_definition_type if pd else None
+        if ptype == m.PARAM_MIX_GAIN:
+            gains = [v / 256.0 for d in subblocks for v in (
+                d.gain.start_point_value, d.gain.end_point_value, d.gain.control_point_value)
+                if v is not None]
+            entry["gain_db"] = _range(gains)
+        elif ptype == m.PARAM_DEMIXING:
+            entry["dmixp_modes"] = sorted({d.dmixp_mode for d in subblocks})
+        elif ptype == m.PARAM_RECON_GAIN:
+            gains = [g for d in subblocks for layer in d.layers if layer is not None
+                     for g in layer.recon_gains.values()]
+            entry["recon_gain"] = _range(gains)
+        elif ptype == m.PARAM_MOMENTARY_LOUDNESS:
+            entry["momentary_loudness_lkfs"] = _range(
+                [-d.momentary_loudness for d in subblocks])
+        elif ptype in m.POSITION_PARAM_OBJECTS:
+            axes = _POLAR_AXES if ptype in m.POLAR_PARAM_TYPES else _CARTESIAN_AXES
+            position: dict = {}
+            for i, axis in enumerate(axes):
+                values = [v for d in subblocks for obj in d.objects for v in (
+                    obj[i].start_point_value, obj[i].end_point_value,
+                    obj[i].control_point_value) if v is not None]
+                if values:
+                    position[axis] = _range(values)
+            entry["position"] = position
+        out.append(entry)
+    return out
+
+
+def _parameter_lines(params: list[dict]) -> list[tuple[str, str]]:
+    lines: list[tuple[str, str]] = []
+    for p in params:
+        where = "; ".join(
+            d["role"] + (f" in mix_presentation {d['mix_presentation_id']}"
+                         if "mix_presentation_id" in d else
+                         f" of audio_element {d['audio_element_id']}")
+            for d in p["declared"]) or "not declared by any descriptor"
+        head = f"parameter_id {p['parameter_id']}"
+        if "type" in p:
+            head += f" {p['type']}"
+        parts = [f"{p['blocks']} block" + ("" if p["blocks"] == 1 else "s")]
+        if "blocks_not_read" in p:
+            parts[-1] += f" ({p['blocks_not_read']} not read)"
+        if "duration_ticks" in p:
+            parts.append(f"{p['duration_ticks']} ticks at {p['parameter_rate']}/s")
+        if "animation_types" in p:
+            parts.append(", ".join(p["animation_types"]))
+        if p.get("gain_db"):
+            parts.append(f"gain {p['gain_db']['min']:+.2f}..{p['gain_db']['max']:+.2f} dB")
+        if "dmixp_modes" in p:
+            parts.append("dmixp_mode " + ", ".join(str(x) for x in p["dmixp_modes"]))
+        if p.get("recon_gain"):
+            parts.append(f"recon_gain {p['recon_gain']['min']}..{p['recon_gain']['max']}")
+        if p.get("momentary_loudness_lkfs"):
+            r = p["momentary_loudness_lkfs"]
+            parts.append(f"momentary loudness {r['min']}..{r['max']} LKFS")
+        if p.get("position"):
+            scale = {"CART8": "/127", "DUAL_CART8": "/127",
+                     "CART16": "/32767", "DUAL_CART16": "/32767"}.get(p.get("type"), "")
+            parts.append(" ".join(
+                f"{axis} {r['min']}..{r['max']}" + ("/127" if axis == "distance" else scale)
+                for axis, r in p["position"].items()))
+        if p.get("declarations_differ"):
+            parts.append("declarations differ")
+        lines.append(("parameter", f"{head} ({where}): " + ", ".join(parts)))
+    return lines
+
+
 def _fact_lines(stream: dict) -> list[tuple[str, str]]:
     """(label, text) lines for the object and rendering facts of a summary's
     stream block; empty for a stream that has neither."""
@@ -130,6 +275,7 @@ def _fact_lines(stream: dict) -> list[tuple[str, str]]:
             parts.append("extension bytes not read (not IAMF v2.0.0 syntax)")
         lines.append(("rendering", f"mix_presentation {r['mix_presentation_id']} / "
                       f"audio_element {r['audio_element_id']}: " + "; ".join(parts)))
+    lines.extend(_parameter_lines(stream.get("parameters", [])))
     return lines
 
 
@@ -163,6 +309,10 @@ def _summary_dict(report: Report) -> dict:
             d["stream"]["object_elements"] = objects
         if rendering:
             d["stream"]["rendering"] = rendering
+        # Present only when the stream carries Parameter Block OBUs.
+        parameters = _parameter_facts(mod)
+        if parameters:
+            d["stream"]["parameters"] = parameters
     return d
 
 

@@ -13,7 +13,7 @@ parser that faithfully records both can flag the mismatch.
 
 from __future__ import annotations
 
-from .reader import ByteReader, ParseError, split_bits
+from .reader import BitReader, ByteReader, ParseError, split_bits
 from . import model as m
 
 
@@ -186,8 +186,10 @@ class IAMFParser:
             self._parse_error(f"codec_config {cc_id} decoder_config: {e}")
         self.model.codec_configs[cc_id] = cc
 
-    def _parse_param_definition(self, r: ByteReader, ptype: int | None,
-                                mix_gain: bool) -> m.ParamDefinition:
+    def _parse_param_definition(self, r: ByteReader, ptype: int) -> m.ParamDefinition:
+        """ParamDefinition() (v2:2221-2236) and what the subclass for ptype
+        adds: the demixing defaults (v2:809-818), default_mix_gain
+        (v2:1903-1905). The position defaults are read by the caller."""
         parameter_id = r.uleb128()
         parameter_rate = r.uleb128()
         mode_byte = r.u8()
@@ -195,21 +197,29 @@ class IAMFParser:
         pd = m.ParamDefinition(
             param_definition_type=ptype, parameter_id=parameter_id,
             parameter_rate=parameter_rate, param_definition_mode=mode,
-            rate_present=parameter_rate != 0,
+            rate_present=parameter_rate != 0, reserved=mode_byte & 0x7F,
         )
         if mode == 0:
             pd.duration = r.uleb128()
             pd.constant_subblock_duration = r.uleb128()
             if pd.constant_subblock_duration == 0:
-                n = r.uleb128()
-                for _ in range(n):
-                    r.uleb128()
+                pd.num_subblocks = r.uleb128()
+                pd.subblock_durations = [r.uleb128() for _ in range(pd.num_subblocks)]
         if ptype == m.PARAM_DEMIXING:
-            r.u8()   # default_demixing_info_parameter_data
-            r.u8()   # default_w + reserved
-        if mix_gain:
+            # DefaultDemixingInfoParameterData(): dmixp_mode (3) + reserved
+            # (5), then default_w (4) + reserved (4)
+            pd.default_dmixp_mode = r.u8() >> 5
+            pd.default_w = r.u8() >> 4
+        if ptype == m.PARAM_MIX_GAIN:
             pd.default_mix_gain = r.s16()
         return pd
+
+    def _declare(self, pd: m.ParamDefinition, role: str, hdr: m.OBUHeader,
+                 **where: int) -> None:
+        """Record a parameter definition in the registry, under its id."""
+        self.model.parameter_definitions.setdefault(pd.parameter_id, []).append(
+            m.ParamDeclaration(param=pd, role=role, file_offset=hdr.file_offset,
+                               redundant_copy=hdr.redundant_copy, **where))
 
     def _parse_audio_element(self, r: ByteReader, hdr: m.OBUHeader) -> None:
         ae_id = r.uleb128()
@@ -220,17 +230,30 @@ class IAMFParser:
         substream_ids = [r.uleb128() for _ in range(num_substreams)]
         num_parameters = r.uleb128()
         params: list[m.ParamDefinition] = []
+        others: list[int] = []
         for _ in range(num_parameters):
             ptype = r.uleb128()
             if ptype in (m.PARAM_DEMIXING, m.PARAM_RECON_GAIN):
-                params.append(self._parse_param_definition(r, ptype, mix_gain=False))
+                pd = self._parse_param_definition(r, ptype)
+                params.append(pd)
+                self._declare(pd, m.ROLE_DEMIXING if ptype == m.PARAM_DEMIXING
+                              else m.ROLE_RECON_GAIN, hdr, audio_element_id=ae_id)
             else:
+                # Read as param_definition_size + bytes. IAMF v2.0.0 gives
+                # that form to types above 9 only (v2:790-793) and no Audio
+                # Element syntax at all to 0 and 3..9, which SHALL NOT be
+                # here (v2:856); v1.1.0 gave size + bytes to every type
+                # above 2 (v1.1:686-689), and AOM's reference reader still
+                # does. Which reading to adopt is an open ruling; the type
+                # is recorded either way.
+                others.append(ptype)
                 size = r.uleb128()
                 r.read(size)   # reserved param_definition_bytes
         ae = m.AudioElement(
             audio_element_id=ae_id, audio_element_type=ae_type, codec_config_id=cc_id,
             num_substreams=num_substreams, audio_substream_ids=substream_ids,
             parameters=params, header=hdr, num_parameters=num_parameters,
+            other_param_definition_types=others,
         )
         if ae_type == m.AUDIO_ELEMENT_CHANNEL:
             self._parse_scalable_channel_layout(r, ae)
@@ -335,23 +358,30 @@ class IAMFParser:
         annotations = [r.cstring() for _ in range(count_label)]
         num_sub_mixes = r.uleb128()
         sub_mixes: list[m.SubMix] = []
-        for _ in range(num_sub_mixes):
+        for i in range(num_sub_mixes):
             num_ae = r.uleb128()
             ae_ids: list[int] = []
             rendering_configs: list[m.RenderingConfig] = []
+            element_mix_gains: list[m.ParamDefinition] = []
             for _j in range(num_ae):
                 ae_id = r.uleb128()
                 ae_ids.append(ae_id)
                 for _k in range(count_label):
                     r.cstring()               # localized element annotation
-                rendering_configs.append(self._parse_rendering_config(r, mp_id, ae_id))
-                # element_mix_config: MixGainParamDefinition
-                self._parse_param_definition(r, None, mix_gain=True)
-            # output_mix_config: MixGainParamDefinition
-            self._parse_param_definition(r, None, mix_gain=True)
+                rendering_configs.append(
+                    self._parse_rendering_config(r, mp_id, ae_id, hdr, i))
+                # element_mix_gain: MixGainParamDefinition
+                pd = self._parse_param_definition(r, m.PARAM_MIX_GAIN)
+                element_mix_gains.append(pd)
+                self._declare(pd, m.ROLE_ELEMENT_MIX_GAIN, hdr, audio_element_id=ae_id,
+                              mix_presentation_id=mp_id, sub_mix_index=i)
+            # output_mix_gain: MixGainParamDefinition
+            output_mix_gain = self._parse_param_definition(r, m.PARAM_MIX_GAIN)
+            self._declare(output_mix_gain, m.ROLE_OUTPUT_MIX_GAIN, hdr,
+                          mix_presentation_id=mp_id, sub_mix_index=i)
             num_layouts = r.uleb128()
             layouts: list[m.LoudnessLayout] = []
-            for _k in range(num_layouts):
+            for k in range(num_layouts):
                 lb = r.u8()
                 layout_type = (lb >> 6) & 0x3
                 sound_system = None
@@ -364,8 +394,13 @@ class IAMFParser:
                 else:
                     label = f"reserved-layout-{layout_type}"
                 ll = self._parse_loudness_info(r, layout_type, sound_system, label)
+                if ll.momentary_loudness is not None:
+                    self._declare(ll.momentary_loudness.param, m.ROLE_MOMENTARY_LOUDNESS,
+                                  hdr, mix_presentation_id=mp_id, sub_mix_index=i,
+                                  layout_index=k)
                 layouts.append(ll)
-            sub_mixes.append(m.SubMix(ae_ids, num_layouts, layouts, rendering_configs))
+            sub_mixes.append(m.SubMix(ae_ids, num_layouts, layouts, rendering_configs,
+                                      element_mix_gains, output_mix_gain))
         mp = m.MixPresentation(
             mix_presentation_id=mp_id, count_label=count_label,
             language_labels=language_labels, annotations=annotations,
@@ -400,8 +435,8 @@ class IAMFParser:
         return sh is not None and (sh.primary_profile in _OBJECT_PROFILES
                                    or sh.additional_profile in _OBJECT_PROFILES)
 
-    def _parse_rendering_config(self, r: ByteReader, mp_id: int,
-                                ae_id: int) -> m.RenderingConfig:
+    def _parse_rendering_config(self, r: ByteReader, mp_id: int, ae_id: int,
+                                hdr: m.OBUHeader, sub_mix_index: int) -> m.RenderingConfig:
         """RenderingConfig() (IAMF v2.0.0, v2:1457-1491).
 
         rendering_config_extension_size is an envelope, and v2.0.0 puts
@@ -450,7 +485,7 @@ class IAMFParser:
                     envelope.read(envelope.uleb128())
                     others.append(ptype)
                     continue
-                pd = self._parse_param_definition(envelope, ptype, mix_gain=False)
+                pd = self._parse_param_definition(envelope, ptype)
                 positions.append(m.PositionParamDefinition(
                     ptype, pd, [self._read_position(envelope, ptype)
                                 for _ in range(n_objects)]))
@@ -470,6 +505,11 @@ class IAMFParser:
         rc.other_param_definition_types = others
         rc.element_gain_offset = gain
         rc.extension_bytes = envelope.remaining()
+        # Declared only once the whole extension has read: a half-read
+        # envelope keeps nothing (above), so it declares nothing either.
+        for pos in positions:
+            self._declare(pos.param, m.ROLE_POSITION, hdr, audio_element_id=ae_id,
+                          mix_presentation_id=mp_id, sub_mix_index=sub_mix_index)
         return rc
 
     @staticmethod
@@ -522,14 +562,181 @@ class IAMFParser:
             for _ in range(n):
                 r.u8()                 # anchor_element
                 r.s16()                # anchored_loudness
-        if info_type & 0xFC:           # info_type_extension
+        if info_type & 0xFC:
+            # info_type_size is an envelope (v2:1996-2018, v2:2065). IAMF
+            # v2.0.0 places the momentary-loudness syntax (bit 3) and the
+            # loudness range (bit 4) inside it; what is left is
+            # info_type_bytes. Bits 2 (LIVE) and 5..7 add no syntax. An
+            # envelope that does not hold what its bits announce is skipped
+            # whole, as before, and noted: parsers that do not understand
+            # these bytes are told to ignore them (v2:2091).
             size = r.uleb128()
-            r.read(size)
+            ll.info_type_size = size
+            env = r.subreader(size)
+            try:
+                if info_type & 0x8:        # MOMENTARY_LOUDNESS
+                    pd = self._parse_param_definition(env, m.PARAM_MOMENTARY_LOUDNESS)
+                    v = env.u16()      # (3) pairs, (6) width, (6) centre, (1) reserved
+                    pairs, width, centre, reserved = (v >> 13, (v >> 7) & 0x3F,
+                                                      (v >> 1) & 0x3F, v & 1)
+                    counts = [env.uleb128() for _ in range((pairs + 1) * 2)]
+                    ll.momentary_loudness = m.MomentaryLoudnessInfo(
+                        pd, pairs, width, centre, reserved, counts)
+                if info_type & 0x10:       # LOUDNESS_RANGE
+                    ll.loudness_range = env.u8() >> 2
+            except ParseError as e:
+                ll.info_type_read = False
+                ll.momentary_loudness = ll.loudness_range = None
+                self.model.parse_notes.append(
+                    f"loudness_info ({label}): info_type {info_type} announces syntax "
+                    f"its {size}-byte envelope does not hold ({e}); the envelope is "
+                    "not read")
+            else:
+                ll.info_type_bytes = env.remaining()
         return ll
 
+    # --------------------------------------------------------- parameter blocks
     def _parse_parameter_block(self, r: ByteReader, hdr: m.OBUHeader) -> None:
+        """ParameterBlockOBU() (v2:2281-2335), read by the first declaration
+        of its parameter_id (get_param_definition(), v2:2342).
+
+        Everything after parameter_id depends on that declaration, so a
+        payload that cannot be read to its end (no declaration, a type with
+        no parameter data syntax, an undefined animation_type, truncation,
+        a subblock count the payload cannot hold) leaves the block in the
+        model with payload_read False and a parse note. It is not a parse
+        error: what was not read is not judged, and the specification tells
+        parsers to ignore blocks of an id nothing refers to or of a type
+        they do not know (v2:2340, v2:2348).
+        """
         pid = r.uleb128()
         self.model.parameter_block_ids.append(pid)
+        block = m.ParameterBlock(parameter_id=pid, header=hdr)
+        self.model.parameter_blocks.append(block)
+        decls = self.model.parameter_definitions.get(pid)
+        if not decls:
+            self._block_unread(block, "no Audio Element or Mix Presentation declares "
+                               f"parameter_id {pid}")
+            return
+        # Every registry entry has a type whose parameter data syntax is
+        # known (0..9): a definition of a type above 9 is carried as
+        # param_definition_size + bytes and declares no parameter_id, so a
+        # block that refers to one is "undeclared" above, as the
+        # specification has it (v2:2348).
+        pd = decls[0].param
+        ptype = pd.param_definition_type
+        block.param_definition_type = ptype
+        block.param_definition_mode = pd.param_definition_mode
+        layers = None
+        if ptype == m.PARAM_RECON_GAIN:
+            ae = self.model.audio_elements.get(decls[0].audio_element_id)
+            layers = ae.channel_layers if ae is not None else []
+        try:
+            if pd.param_definition_mode:
+                block.duration = r.uleb128()
+                block.constant_subblock_duration = r.uleb128()
+                if block.constant_subblock_duration == 0:
+                    block.num_subblocks = r.uleb128()
+                duration, csd, num_subblocks = (block.duration, block.constant_subblock_duration,
+                                                block.num_subblocks)
+            else:
+                duration, csd, num_subblocks = (pd.duration, pd.constant_subblock_duration,
+                                                pd.num_subblocks)
+            if csd:
+                num_subblocks = m.implied_num_subblocks(duration, csd)
+            if num_subblocks > m.MAX_PARAMETER_SUBBLOCKS:
+                raise ParseError(f"num_subblocks {num_subblocks} is more than this "
+                                 f"reader follows ({m.MAX_PARAMETER_SUBBLOCKS})",
+                                 r.abs_pos)
+            for _ in range(num_subblocks):
+                sb = m.ParameterSubblock()
+                if pd.param_definition_mode and csd == 0:
+                    sb.subblock_duration = r.uleb128()
+                sb.data = self._parse_parameter_data(r, ptype, layers)
+                block.subblocks.append(sb)
+        except ParseError as e:
+            self._block_unread(block, str(e))
+            return
+        block.payload_read = True
+        block.extra_bytes = r.remaining()
+
+    def _block_unread(self, block: m.ParameterBlock, why: str) -> None:
+        block.read_error = why
+        self.model.parse_notes.append(
+            f"parameter block for parameter_id {block.parameter_id} at byte "
+            f"{block.header.file_offset}: {why}; its payload is not read")
+
+    def _parse_parameter_data(self, r: ByteReader, ptype: int,
+                              layers: list[m.ChannelLayerConfig] | None):
+        """The parameter data of one subblock, by definition type
+        (v2:2304-2333)."""
+        if ptype == m.PARAM_MIX_GAIN:
+            anim = self._read_animation_type(r)
+            return m.MixGainParameterData(anim, self._read_animated(
+                anim, lambda: r.s16(), lambda: r.u8()))
+        if ptype == m.PARAM_DEMIXING:
+            b = r.u8()
+            return m.DemixingInfoParameterData(dmixp_mode=b >> 5, reserved=b & 0x1F)
+        if ptype == m.PARAM_RECON_GAIN:
+            data = m.ReconGainInfoParameterData()
+            for layer in layers or []:
+                if not layer.recon_gain_is_present:
+                    data.layers.append(None)
+                    continue
+                flags = r.uleb128()
+                gains = {bit: r.u8() for bit in range(m.RECON_GAIN_FLAG_BITS)
+                         if flags >> bit & 1}
+                data.layers.append(m.ReconGainLayerData(flags, gains))
+            return data
+        if ptype == m.PARAM_MOMENTARY_LOUDNESS:
+            b = r.u8()
+            return m.MomentaryLoudnessParameterData(momentary_loudness=b >> 2,
+                                                    reserved=b & 0x3)
+        # 3..8: one triple of AnimatedParameterData per object, bit-packed
+        # in syntax order; the polar widths are 9, 8 and 7 bits (signed,
+        # signed, unsigned), the Cartesian ones 8 or 16 bits signed.
+        anim = self._read_animation_type(r)
+        bits = BitReader(r)
+        if ptype in m.POLAR_PARAM_TYPES:
+            axes = (lambda: bits.s(9), lambda: bits.s(8), lambda: bits.u(7))
+        elif ptype in (m.PARAM_CART8, m.PARAM_DUAL_CART8):
+            axes = (lambda: bits.s(8),) * 3
+        else:
+            axes = (lambda: bits.s(16),) * 3
+        # Every animation type packs each object into whole bytes (24, 48,
+        # 96, 24 or 72 bits for polar; 24/48/96/24/72 for 8-bit and
+        # 48/96/168/48/120 for 16-bit Cartesian), so the byte reader is in
+        # step again when the objects end.
+        data = m.PositionParameterData(anim)
+        for _ in range(m.POSITION_PARAM_OBJECTS[ptype]):
+            data.objects.append(tuple(
+                self._read_animated(anim, axis, lambda: bits.u(8)) for axis in axes))
+        return data
+
+    @staticmethod
+    def _read_animation_type(r: ByteReader) -> int:
+        """animation_type; a value outside the Animation Types table leaves
+        the rest of the block unreadable (its fields are unknown) and tells
+        parsers to ignore the block (v2:2472, v2:2596, v2:2699)."""
+        pos = r.abs_pos
+        anim = r.uleb128()
+        if anim not in m.ANIMATION_TYPE_NAME:
+            raise ParseError(f"animation_type {anim} is not one IAMF v2.0.0 defines", pos)
+        return anim
+
+    @staticmethod
+    def _read_animated(anim: int, value, time) -> m.AnimatedValue:
+        """AnimatedParameterData<T>(animation_type) (v2:2420-2443): value()
+        reads one T, time() one control_point_relative_time byte."""
+        v = m.AnimatedValue()
+        if anim in (m.ANIMATION_STEP, m.ANIMATION_LINEAR, m.ANIMATION_BEZIER):
+            v.start_point_value = value()
+        if anim != m.ANIMATION_STEP:
+            v.end_point_value = value()
+        if anim in (m.ANIMATION_BEZIER, m.ANIMATION_INTER_BEZIER):
+            v.control_point_value = value()
+            v.control_point_relative_time = time()
+        return v
 
     def _parse_audio_frame(self, r: ByteReader, hdr: m.OBUHeader, *,
                            first_temporal: bool) -> None:

@@ -124,7 +124,7 @@ _reg(CheckSpec("S-208", "Annotation presence", "L2", S.WARN, ("F24",),
 # L2 object and rendering semantics (IAMF v2.0.0: object-based elements, and
 # the RenderingConfig a Mix Presentation gives each element). Descriptors,
 # plus LPCM frame sizes for S-217; positions over time (Parameter Block OBUs)
-# are not read.
+# are read into the model (IA-0051 stage 1) and not yet judged.
 _reg(CheckSpec("S-210", "Object element configuration", "L2", S.FAIL,
                description="An object-based element's num_objects is not 0 and its Audio "
                "Element OBU has num_parameters = 0 (FAIL). num_objects above 2, and "

@@ -210,6 +210,18 @@ def validate_bytes(data: bytes, *, source: str = "<bytes>", profile: str = "gene
                     mp4info.frame_refs = walk.audio_frames
                     mp4info.temporal_delimiter_is_not_key_frame = (
                         walk.temporal_delimiter_is_not_key_frame)
+                    # Parameter Block OBUs ride in the samples too; the
+                    # re-walk declares the same registry from the same
+                    # descriptors, so its blocks are the model's blocks.
+                    # Their parse notes (an unreadable payload) come along;
+                    # the walk's descriptor notes repeat mod's and are not.
+                    mod.parameter_blocks = walk.parameter_blocks
+                    mod.parameter_block_ids = walk.parameter_block_ids
+                    for note in walk.parse_notes:
+                        if note not in mod.parse_notes and note not in walk.parse_errors:
+                            mod.parse_notes.append(
+                                "MP4 samples (offsets in the reconstructed IA "
+                                f"stream): {note}")
                     # The re-walk reads the descriptors again and then every
                     # sample. A parse problem it meets past the descriptors
                     # must reach S-108: a walk that stops early otherwise

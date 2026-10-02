@@ -45,6 +45,26 @@ class Writer:
         return bytes(self.b)
 
 
+class BitWriter:
+    """MSB-first bit packer for the position parameter data, whose fields
+    are not byte-aligned (signed 9 / signed 8 / unsigned 7 bits in a row)."""
+
+    def __init__(self):
+        self.bits: list[int] = []
+
+    def u(self, v, width):
+        for i in range(width - 1, -1, -1):
+            self.bits.append((v >> i) & 1)
+        return self
+
+    def s(self, v, width):
+        return self.u(v & ((1 << width) - 1), width)
+
+    def bytes(self) -> bytes:
+        bits = self.bits + [0] * (-len(self.bits) % 8)
+        return bytes(int("".join(map(str, bits[i:i + 8])), 2) for i in range(0, len(bits), 8))
+
+
 def q78(db: float) -> int:
     return int(round(db * 256.0))
 
@@ -81,6 +101,157 @@ class ChannelLayerSpec:
 
 
 @dataclass
+class ParamDefSpec:
+    """A ParamDefinition() with every field under the test's control.
+
+    ptype 0 MIX_GAIN (writes default_mix_gain), 1 DEMIXING (writes the
+    demixing defaults), 2 RECON_GAIN, 9 MOMENTARY_LOUDNESS. mode 0 writes
+    duration and constant_subblock_duration; with constant_subblock_duration
+    0 it writes num_subblocks and the subblock_durations too."""
+    ptype: int
+    parameter_id: int = 1000
+    rate: int = 48000
+    mode: int = 1
+    duration: int | None = None
+    constant_subblock_duration: int | None = None
+    subblock_durations: list[int] = field(default_factory=list)
+    num_subblocks: int | None = None          # forced count (default: the list's length)
+    default_mix_gain: int = 0                 # Q7.8
+    default_dmixp_mode: int = 0
+    default_w: int = 0
+    reserved: int = 0                         # the 7 bits after param_definition_mode
+
+    def write(self, w: "Writer", *, with_type: bool = True) -> None:
+        if with_type:
+            w.leb128(self.ptype)
+        w.leb128(self.parameter_id).leb128(self.rate)
+        w.u8(((self.mode & 1) << 7) | (self.reserved & 0x7F))
+        if self.mode == 0:
+            w.leb128(self.duration or 0).leb128(self.constant_subblock_duration or 0)
+            if not self.constant_subblock_duration:
+                n = (len(self.subblock_durations) if self.num_subblocks is None
+                     else self.num_subblocks)
+                w.leb128(n)
+                for d in self.subblock_durations:
+                    w.leb128(d)
+        if self.ptype == 1:
+            w.u8((self.default_dmixp_mode & 0x7) << 5).u8((self.default_w & 0xF) << 4)
+        if self.ptype == 0:
+            w.s16(self.default_mix_gain)
+
+
+# -- parameter data of one subblock, by definition type (IAMF v2.0.0) ------
+def mix_gain_data(animation_type: int, start: int | None = None, end: int | None = None,
+                  control: int | None = None, time: int | None = None) -> bytes:
+    """MixGainParameterData(): animation_type then AnimatedParameterData<s16>.
+    Pass exactly the values the animation type carries (0 STEP: start;
+    1 LINEAR: start, end; 2 BEZIER: start, end, control, time; 3 INTER_LINEAR:
+    end; 4 INTER_BEZIER: end, control, time); a value passed for a field the
+    type does not carry is written anyway (a malformed block on purpose)."""
+    w = Writer().leb128(animation_type)
+    for v in (start, end, control):
+        if v is not None:
+            w.s16(v)
+    if time is not None:
+        w.u8(time)
+    return w.bytes()
+
+
+def demixing_data(dmixp_mode: int, reserved: int = 0) -> bytes:
+    return bytes([((dmixp_mode & 0x7) << 5) | (reserved & 0x1F)])
+
+
+def recon_gain_data(layers: list) -> bytes:
+    """ReconGainInfoParameterData(): one entry per layer whose
+    recon_gain_is_present_flag is set, each (recon_gain_flags, {bit: gain})
+    or a raw int flags value with no gains. The flags leb128 is written as
+    given; the gains follow in bit order."""
+    w = Writer()
+    for flags, gains in layers:
+        w.leb128(flags)
+        for bit in sorted(gains):
+            w.u8(gains[bit])
+    return w.bytes()
+
+
+def momentary_loudness_data(momentary_loudness: int, reserved: int = 0) -> bytes:
+    return bytes([((momentary_loudness & 0x3F) << 2) | (reserved & 0x3)])
+
+
+_POSITION_WIDTHS = {3: (9, 8, 7), 6: (9, 8, 7), 4: (8, 8, 8), 7: (8, 8, 8),
+                    5: (16, 16, 16), 8: (16, 16, 16)}
+
+
+def position_data(ptype: int, animation_type: int, objects: list) -> bytes:
+    """PolarParameterData() .. DualCart16ParameterData(): animation_type, then
+    per object three AnimatedParameterData instances bit-packed in sequence.
+    Each object is a triple of per-axis values; an axis value is an int for
+    STEP / INTER_LINEAR (the one value the type carries) or a tuple of the
+    values the type carries, in template order (start, end, control, time)."""
+    w = Writer().leb128(animation_type)
+    bits = BitWriter()
+    widths = _POSITION_WIDTHS[ptype]
+    for triple in objects:
+        for k, (axis, width) in enumerate(zip(triple, widths)):
+            values = axis if isinstance(axis, tuple) else (axis,)
+            n_values = {0: 1, 1: 2, 2: 3, 3: 1, 4: 2}.get(animation_type, len(values))
+            for i, v in enumerate(values):
+                if i >= n_values:
+                    bits.u(v, 8)                   # control_point_relative_time
+                elif k == 2 and ptype in (3, 6):
+                    bits.u(v, width)               # polar distance is unsigned
+                else:
+                    bits.s(v, width)
+    return w.raw(bits.bytes()).bytes()
+
+
+@dataclass
+class SubblockSpec:
+    data: bytes                               # one of the *_data() helpers, or raw
+    duration: int | None = None               # written when the block is mode 1 with csd 0
+
+
+@dataclass
+class ParameterBlockSpec:
+    """One Parameter Block OBU, placed at the start of temporal unit `tu`
+    (after its Temporal Delimiter, before its audio frames). mode1 writes
+    duration, constant_subblock_duration and, with the latter 0,
+    num_subblocks (the subblock count unless forced). raw replaces the
+    whole payload after parameter_id."""
+    parameter_id: int
+    tu: int = 0
+    mode1: tuple | None = None                # (duration, constant_subblock_duration)
+    num_subblocks: int | None = None          # forced count written when csd == 0
+    subblocks: list[SubblockSpec] = field(default_factory=list)
+    raw: bytes | None = None
+    trailing: bytes = b""                     # bytes after the syntax, inside obu_size
+    redundant: bool = False
+    truncate: int | None = None               # keep only this many payload bytes
+
+    def bytes(self) -> bytes:
+        w = Writer().leb128(self.parameter_id)
+        if self.raw is not None:
+            w.raw(self.raw)
+        else:
+            csd = None
+            if self.mode1 is not None:
+                duration, csd = self.mode1
+                w.leb128(duration).leb128(csd)
+                if csd == 0:
+                    w.leb128(len(self.subblocks) if self.num_subblocks is None
+                             else self.num_subblocks)
+            for sb in self.subblocks:
+                if self.mode1 is not None and csd == 0 and sb.duration is not None:
+                    w.leb128(sb.duration)
+                w.raw(sb.data)
+            w.raw(self.trailing)
+        payload = w.bytes()
+        if self.truncate is not None:
+            payload = payload[: self.truncate]
+        return obu(3, payload, redundant=self.redundant)
+
+
+@dataclass
 class ElementSpec:
     id: int
     codec_config_id: int
@@ -91,7 +262,9 @@ class ElementSpec:
     ambi_mapping: list[int] | None = None
     ambi_substream_count: int | None = None
     ambi_occ_override: int | None = None      # force a non-(N+1)^2 output_channel_count
-    params: list[tuple[int, int]] = field(default_factory=list)  # (ptype, rate)
+    # (ptype, rate) for a mode-1 definition of parameter_id 1000, or a
+    # ParamDefSpec for one with every field chosen.
+    params: list = field(default_factory=list)
     # kind "object": ObjectsConfig() = objects_config_size, num_objects, then
     # objects_extension as objects_config_extension_bytes.
     num_objects: int = 1
@@ -108,11 +281,29 @@ class ElementSpec:
 
 
 @dataclass
+class MomentarySpec:
+    """The momentary-loudness part of a LoudnessInfo() (info_type bit 3):
+    a MomentaryLoudnessParamDefinition() and the histogram fields."""
+    definition: ParamDefSpec
+    num_bin_pairs_minus_one: int = 0
+    bin_width_minus_one: int = 0
+    first_bin_center: int = 0
+    counts: list[int] = field(default_factory=lambda: [0, 0])
+    reserved: int = 0
+
+
+@dataclass
 class LayoutSpec:
     sound_system: int
     integrated_db: float
     digital_db: float
     true_peak_db: float | None = None
+    # info_type bits 2..4 and the info_type_size envelope they share.
+    live: bool = False                          # bit 2, no syntax of its own
+    momentary: MomentarySpec | None = None      # bit 3
+    loudness_range: int | None = None           # bit 4
+    info_type_bytes: bytes = b""                # reserved tail of the envelope
+    info_type_raw: bytes | None = None          # the whole envelope, verbatim
 
 
 def polar_bytes(azimuth: int, elevation: int, distance: int) -> bytes:
@@ -215,6 +406,11 @@ class MixSpec:
     # audio_element_id -> its RenderingConfig(); an element not listed gets
     # the v1.1.0 form (mode 0, empty extension).
     rendering: dict[int, RenderingSpec] = field(default_factory=dict)
+    # audio_element_id -> its element_mix_gain, and the output_mix_gain of
+    # every sub-mix; unlisted ones are mode-1 definitions of parameter_id
+    # 1000 at 48000/s with default_mix_gain 0.
+    element_mix_gains: dict[int, ParamDefSpec] = field(default_factory=dict)
+    output_mix_gain: ParamDefSpec | None = None
 
 
 @dataclass
@@ -234,6 +430,9 @@ class IAMFSpec:
     trim_end_last_tu: int = 0         # num_samples_to_trim_at_end on last-TU frames
     temporal_delimiters: bool = False             # a Temporal Delimiter opens every TU
     non_key_tus: list[int] = field(default_factory=list)   # TUs with is_not_key_frame=1
+    # Parameter Block OBUs, each placed at the start of its temporal unit
+    # (after the Temporal Delimiter, before the audio frames), in list order.
+    parameter_blocks: list[ParameterBlockSpec] = field(default_factory=list)
     # Further Codec Config OBUs after the first, as (codec_config_id, codec_id).
     extra_codec_configs: list[tuple[int, str]] = field(default_factory=list)
     # Copies of the first Codec Config OBU with obu_redundant_copy set, each
@@ -279,6 +478,13 @@ def _param_definition(w: Writer, ptype: int | None, rate: int, mix_gain: bool):
         w.s16(0)
 
 
+def _mix_gain_definition(w: Writer, spec: ParamDefSpec | None) -> None:
+    if spec is None:
+        _param_definition(w, None, 48000, mix_gain=True)
+    else:
+        spec.write(w, with_type=False)
+
+
 def _audio_element(e: ElementSpec) -> bytes:
     w = Writer()
     w.leb128(e.id)
@@ -290,8 +496,12 @@ def _audio_element(e: ElementSpec) -> bytes:
     for sid in e.substream_ids:
         w.leb128(sid)
     w.leb128(len(e.params))
-    for ptype, rate in e.params:
-        _param_definition(w, ptype, rate, mix_gain=False)
+    for p in e.params:
+        if isinstance(p, ParamDefSpec):
+            p.write(w)
+        else:
+            ptype, rate = p
+            _param_definition(w, ptype, rate, mix_gain=False)
     if e.raw_config is not None:
         w.raw(e.raw_config)
     elif e.kind == "object":
@@ -335,17 +545,36 @@ def _mix_presentation(mx: MixSpec, count_label: int = 1) -> bytes:
             for _ in range(count_label):
                 w.cstring("element")
             w.raw(mx.rendering.get(ae_id, RenderingSpec()).bytes())  # rendering_config
-            _param_definition(w, None, 48000, mix_gain=True)   # element_mix_config
-        _param_definition(w, None, 48000, mix_gain=True)       # output_mix_config
+            _mix_gain_definition(w, mx.element_mix_gains.get(ae_id))  # element_mix_gain
+        _mix_gain_definition(w, mx.output_mix_gain)                   # output_mix_gain
         w.leb128(len(mx.layouts))
         for ly in mx.layouts:
             info_type = 1 if ly.true_peak_db is not None else 0
+            info_type |= (4 if ly.live else 0) | (8 if ly.momentary else 0)
+            info_type |= 16 if ly.loudness_range is not None else 0
             w.u8((2 << 6) | ((ly.sound_system & 0xF) << 2))    # SS convention
             w.u8(info_type)
             w.s16(q78(ly.integrated_db))
             w.s16(q78(ly.digital_db))
             if info_type & 1:
                 w.s16(q78(ly.true_peak_db))
+            if info_type & 0xFC or ly.info_type_raw is not None:
+                env = Writer()
+                if ly.info_type_raw is not None:
+                    env.raw(ly.info_type_raw)
+                else:
+                    if ly.momentary is not None:
+                        ml = ly.momentary
+                        ml.definition.write(env, with_type=False)
+                        env.u16(((ml.num_bin_pairs_minus_one & 0x7) << 13)
+                                | ((ml.bin_width_minus_one & 0x3F) << 7)
+                                | ((ml.first_bin_center & 0x3F) << 1) | (ml.reserved & 1))
+                        for c in ml.counts:
+                            env.leb128(c)
+                    if ly.loudness_range is not None:
+                        env.u8((ly.loudness_range & 0x3F) << 2)
+                    env.raw(ly.info_type_bytes)
+                w.leb128(len(env.b)).raw(env.bytes())
     if mx.optional_fields is None:
         return obu(2, w.bytes())
     w.u8(len(mx.tags))                # MixPresentationTags precede the optional fields
@@ -372,6 +601,9 @@ def _audio_frames(spec: IAMFSpec) -> bytes:
         te = spec.trim_end_last_tu if _tu == spec.temporal_units - 1 else 0
         if spec.temporal_delimiters:
             out += obu(4, b"", flag=_tu in spec.non_key_tus)
+        for pb in spec.parameter_blocks:
+            if pb.tu == _tu:
+                out += pb.bytes()
         for sid in declared:
             payload = Writer().leb128(sid).raw(whole.get(sid, pcm)).bytes()
             out += obu(5, payload, trim_start=ts, trim_end=te)
@@ -468,10 +700,36 @@ def object_spec(*, dual: bool = False, ptype: int | None = None,
     )
 
 
+def animated_spec() -> IAMFSpec:
+    """A 5.1 stream whose parameters move: a demixing definition on the
+    element (mode 0, one frame per block), an element_mix_gain in mode 1 and
+    an output_mix_gain in mode 0, each with a Parameter Block OBU at the head
+    of every temporal unit. parameter_rate equals the 48000 Hz sample rate,
+    so one frame of 480 samples is 480 ticks."""
+    spec = channel_spec("5.1")
+    spec.elements[0].params = [ParamDefSpec(1, parameter_id=200, mode=0, duration=480,
+                                            constant_subblock_duration=480,
+                                            default_dmixp_mode=1, default_w=10)]
+    mx = spec.mixes[0]
+    mx.element_mix_gains = {300: ParamDefSpec(0, parameter_id=100, default_mix_gain=q78(-3.0))}
+    mx.output_mix_gain = ParamDefSpec(0, parameter_id=101, mode=0, duration=480,
+                                      constant_subblock_duration=480)
+    for tu in range(spec.temporal_units):
+        spec.parameter_blocks += [
+            ParameterBlockSpec(100, tu, mode1=(480, 480),
+                               subblocks=[SubblockSpec(mix_gain_data(0, q78(-3.0 - tu)))]),
+            ParameterBlockSpec(101, tu, subblocks=[SubblockSpec(
+                mix_gain_data(1, q78(-1.0 * tu), q78(-1.0 * (tu + 1))))]),
+            ParameterBlockSpec(200, tu, subblocks=[SubblockSpec(demixing_data(1 + tu))]),
+        ]
+    return spec
+
+
 def all_valid_specs() -> dict[str, IAMFSpec]:
     d = {name: channel_spec(name) for name in _CHANNEL_LAYOUTS}
     d["foa"] = scene_spec(1)
     d["3oa"] = scene_spec(3)
     d["object"] = object_spec()
     d["dual-object"] = object_spec(dual=True)
+    d["animated"] = animated_spec()
     return d

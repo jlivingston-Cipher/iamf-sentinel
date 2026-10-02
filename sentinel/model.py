@@ -75,6 +75,65 @@ PARAM_TYPE_NAME = {
     9: "MOMENTARY_LOUDNESS",
 }
 
+# animation_type of AnimatedParameterData() (Animation Types table,
+# v2:2391-2413). v1.1.0 defined 0..2 only (v1.1:1634-1639); 3 and 4 are new
+# in v2.0.0. Every other value is undefined.
+ANIMATION_STEP = 0
+ANIMATION_LINEAR = 1
+ANIMATION_BEZIER = 2
+ANIMATION_INTER_LINEAR = 3
+ANIMATION_INTER_BEZIER = 4
+ANIMATION_TYPE_NAME = {0: "STEP", 1: "LINEAR", 2: "BEZIER", 3: "INTER_LINEAR",
+                       4: "INTER_BEZIER"}
+
+# Where a parameter definition can be declared (ParamDeclaration.role).
+ROLE_DEMIXING = "demixing"                   # Audio Element OBU (v2:784-785)
+ROLE_RECON_GAIN = "recon_gain"               # Audio Element OBU (v2:787-788)
+ROLE_ELEMENT_MIX_GAIN = "element_mix_gain"   # Mix Presentation sub-mix element (v2:1347)
+ROLE_OUTPUT_MIX_GAIN = "output_mix_gain"     # Mix Presentation sub-mix (v2:1349)
+ROLE_POSITION = "position"                   # RenderingConfig() (v2:1467-1479)
+ROLE_MOMENTARY_LOUDNESS = "momentary_loudness"   # LoudnessInfo() (v2:1999-2000)
+
+# Bits of recon_gain_flags that name a channel (v2:2535-2550): b0..b6 in the
+# first leb128 byte, b7..b11 in the second. n(i) "SHALL be 7 or 12".
+RECON_GAIN_FLAG_BITS = 12
+
+# Subblocks a parameter block can declare before the reader stops: a
+# subblock may be coded in zero bytes (recon gain with no layer flagged), so
+# the payload does not bound the count on its own. 2^18 covers one second of
+# single-tick subblocks at 192 kHz, the longest block any profile allows
+# (v2:3150).
+MAX_PARAMETER_SUBBLOCKS = 1 << 18
+
+
+def implied_num_subblocks(duration: int, constant_subblock_duration: int) -> int:
+    """num_subblocks when constant_subblock_duration is not 0:
+    ceil(duration / constant_subblock_duration) (v2:2260, v2:2357)."""
+    return -(-duration // constant_subblock_duration)
+
+
+def parameter_block_timing(block: "ParameterBlock",
+                           pd: "ParamDefinition | None") -> tuple[int | None, list[int]]:
+    """(duration, subblock durations) in ticks that govern a parameter block:
+    the block's own fields in param_definition_mode 1, the definition's in
+    mode 0 (v2:2248-2252). The last subblock of a constant-duration split
+    takes what is left (v2:2261-2262). (None, []) when the fields are not
+    there to derive from."""
+    if block.param_definition_mode == 1:
+        duration, csd = block.duration, block.constant_subblock_duration
+        coded = [sb.subblock_duration for sb in block.subblocks]
+    elif pd is not None and block.param_definition_mode == 0:
+        duration, csd = pd.duration, pd.constant_subblock_duration
+        coded = list(pd.subblock_durations)
+    else:
+        return None, []
+    if duration is None or csd is None:
+        return duration, []
+    if csd != 0:
+        n = implied_num_subblocks(duration, csd)
+        return duration, ([csd] * (n - 1) + [duration - (n - 1) * csd] if n else [])
+    return duration, [d for d in coded if d is not None]
+
 # Objects positioned by each position-based definition. This is also the
 # num_objects each one is allowed for (v2:1554-1562).
 POSITION_PARAM_OBJECTS = {
@@ -176,7 +235,15 @@ class ObjectsConfig:
 
 @dataclass
 class ParamDefinition:
-    param_definition_type: int | None   # None for mix-gain (context-known)
+    """ParamDefinition() and the fields its subclasses add (v2:2221-2236).
+
+    param_definition_type is a key of PARAM_TYPE_NAME: PARAM_MIX_GAIN for the
+    MixGainParamDefinition() of a Mix Presentation, whose type is not coded
+    (the context names it). duration, constant_subblock_duration,
+    num_subblocks and subblock_durations are as coded, present in mode 0
+    only; num_subblocks is coded only when constant_subblock_duration is 0
+    (implied_num_subblocks() gives it otherwise)."""
+    param_definition_type: int | None
     parameter_id: int
     parameter_rate: int
     param_definition_mode: int
@@ -184,6 +251,32 @@ class ParamDefinition:
     constant_subblock_duration: int | None = None
     default_mix_gain: int | None = None
     rate_present: bool = True          # False signals the F1 "rate missing" class
+    num_subblocks: int | None = None
+    subblock_durations: list[int] = field(default_factory=list)
+    reserved: int = 0                  # the 7 bits after param_definition_mode
+    # DemixingParamDefinition(): DefaultDemixingInfoParameterData() (v2:809-818)
+    default_dmixp_mode: int | None = None
+    default_w: int | None = None
+
+
+@dataclass
+class ParamDeclaration:
+    """One declaration of a parameter_id in the descriptors: the definition
+    and where it was made. The registry (IAMFModel.parameter_definitions)
+    keeps every declaration of an id, so an id declared twice, identically
+    or not, is on record; the first declaration is the one parameter blocks
+    are read by."""
+    param: ParamDefinition
+    role: str                               # a ROLE_* value
+    file_offset: int                        # of the declaring OBU
+    redundant_copy: bool = False            # the declaring OBU's obu_redundant_copy
+    # The Audio Element of a demixing or recon-gain definition, or the one a
+    # sub-mix entry (element_mix_gain, position) renders. None for
+    # output_mix_gain and momentary_loudness.
+    audio_element_id: int | None = None
+    mix_presentation_id: int | None = None
+    sub_mix_index: int | None = None        # 0-based position in the sub-mix list
+    layout_index: int | None = None         # 0-based loudness layout, momentary_loudness only
 
 
 @dataclass
@@ -204,6 +297,11 @@ class AudioElement:
     # num_parameters as coded. `parameters` holds only the demixing and
     # recon-gain definitions; any other type is skipped and counted here.
     num_parameters: int = 0
+    # param_definition_type of every skipped definition, in file order. IAMF
+    # v2.0.0 allows only DEMIXING and RECON_GAIN here (v2:856-858); 0 and
+    # 3..9 have no Audio Element syntax at all, and types above 9 are carried
+    # as param_definition_size + bytes (v2:790-793).
+    other_param_definition_types: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -259,6 +357,18 @@ class RenderingConfig:
 
 
 @dataclass
+class MomentaryLoudnessInfo:
+    """The momentary-loudness part of a LoudnessInfo() (info_type bit 3,
+    v2:1999-2010): its parameter definition and the histogram fields."""
+    param: ParamDefinition                 # MomentaryLoudnessParamDefinition()
+    num_bin_pairs_minus_one: int
+    bin_width_minus_one: int
+    first_bin_center: int                  # LKFS magnitude; the centre is -1 x this
+    reserved: int
+    counts: list[int] = field(default_factory=list)   # (num_bin_pairs_minus_one + 1) x 2
+
+
+@dataclass
 class LoudnessLayout:
     layout_type: int
     sound_system: int | None
@@ -269,6 +379,15 @@ class LoudnessLayout:
     true_peak: float | None = None
     integrated_raw: int | None = None
     digital_peak_raw: int | None = None
+    # The info_type_size envelope (v2:1996-2018), read as IAMF v2.0.0 lays it
+    # out: None when the stream carries none (info_type bits 2..7 clear).
+    info_type_size: int | None = None
+    momentary_loudness: MomentaryLoudnessInfo | None = None   # bit 3
+    loudness_range: int | None = None                         # bit 4, LU
+    info_type_bytes: int = 0               # reserved bytes left in the envelope
+    # False when the envelope does not hold the syntax its bits announce;
+    # nothing of it is kept and the envelope is skipped whole (a note).
+    info_type_read: bool = True
 
 
 @dataclass
@@ -278,6 +397,10 @@ class SubMix:
     layouts: list[LoudnessLayout] = field(default_factory=list)
     # One per entry of audio_element_ids, in the same order.
     rendering_configs: list[RenderingConfig] = field(default_factory=list)
+    # element_mix_gain of each entry, in the same order, and the sub-mix's
+    # output_mix_gain (MixGainParamDefinition(), v2:1347-1349).
+    element_mix_gains: list[ParamDefinition] = field(default_factory=list)
+    output_mix_gain: ParamDefinition | None = None
 
 
 @dataclass
@@ -313,6 +436,102 @@ class AudioFrameRef:
 
 
 @dataclass
+class AnimatedValue:
+    """One AnimatedParameterData<T> instance (v2:2420-2443), values as coded.
+    The fields an animation type does not carry stay None: STEP has the
+    start only, LINEAR start and end, BEZIER all four, INTER_LINEAR the end
+    only, INTER_BEZIER end, control and time."""
+    start_point_value: int | None = None
+    end_point_value: int | None = None
+    control_point_value: int | None = None
+    control_point_relative_time: int | None = None    # Q0.8, 0..255
+
+
+@dataclass
+class MixGainParameterData:
+    """MixGainParameterData() (v2:2464-2467); the gain values are Q7.8 dB."""
+    animation_type: int
+    gain: AnimatedValue
+
+
+@dataclass
+class DemixingInfoParameterData:
+    """DemixingInfoParameterData() (v2:2483-2486); dmixp_mode 3 and 7 are
+    reserved (v2:2493-2500)."""
+    dmixp_mode: int
+    reserved: int
+
+
+@dataclass
+class ReconGainLayerData:
+    """recon_gain_flags(i) and the recon_gain of each flagged channel for one
+    layer of a scalable channel element (v2:2518-2528). The gains are keyed
+    by bit position (b0 Left .. b11 LFE, v2:2535-2550)."""
+    recon_gain_flags: int
+    recon_gains: dict[int, int] = field(default_factory=dict)
+
+
+@dataclass
+class ReconGainInfoParameterData:
+    """One entry per ChannelAudioLayerConfig() of the element, in layer
+    order; None for a layer whose recon_gain_is_present_flag is 0."""
+    layers: list[ReconGainLayerData | None] = field(default_factory=list)
+
+
+@dataclass
+class PositionParameterData:
+    """PolarParameterData() .. DualCart16ParameterData() (v2:2586-2813).
+    One triple per object, in syntax order: (azimuth, elevation, distance)
+    for the polar types, (x, y, z) for the Cartesian ones, each an
+    AnimatedValue in the units of the definition's defaults."""
+    animation_type: int
+    objects: list[tuple[AnimatedValue, AnimatedValue, AnimatedValue]] = field(
+        default_factory=list)
+
+
+@dataclass
+class MomentaryLoudnessParameterData:
+    """MomentaryLoudnessParameterData() (v2:2840-2843): the loudness is
+    -1 x momentary_loudness LKFS."""
+    momentary_loudness: int
+    reserved: int
+
+
+@dataclass
+class ParameterSubblock:
+    # subblock_duration as coded in the block: only in mode 1 with
+    # constant_subblock_duration 0 (v2:2298-2301); None otherwise.
+    subblock_duration: int | None = None
+    data: (MixGainParameterData | DemixingInfoParameterData
+           | ReconGainInfoParameterData | PositionParameterData
+           | MomentaryLoudnessParameterData | None) = None
+
+
+@dataclass
+class ParameterBlock:
+    """A Parameter Block OBU (v2:2281-2335), read by the first declaration of
+    its parameter_id in the registry. The block-level duration fields are
+    kept as coded, which is only in param_definition_mode 1; in mode 0 they
+    come from the definition (parameter_block_timing() joins the two).
+
+    payload_read is False when the payload could not be read to the end:
+    no declaration for the id, a definition type without parameter data
+    syntax, an undefined animation_type, a truncated or overrunning payload.
+    read_error says which; the subblocks read before it are kept."""
+    parameter_id: int
+    header: OBUHeader
+    param_definition_type: int | None = None
+    param_definition_mode: int | None = None
+    duration: int | None = None
+    constant_subblock_duration: int | None = None
+    num_subblocks: int | None = None        # coded only when constant_subblock_duration is 0
+    subblocks: list[ParameterSubblock] = field(default_factory=list)
+    payload_read: bool = False
+    read_error: str | None = None
+    extra_bytes: int = 0                    # payload bytes after the syntax
+
+
+@dataclass
 class IAMFModel:
     sequence_header: SequenceHeader | None = None
     codec_configs: dict[int, CodecConfig] = field(default_factory=dict)
@@ -321,6 +540,11 @@ class IAMFModel:
     obu_order: list[str] = field(default_factory=list)   # OBU type names, in file order
     audio_frames: list[AudioFrameRef] = field(default_factory=list)
     parameter_block_ids: list[int] = field(default_factory=list)
+    # Every Parameter Block OBU, in file order, with its payload as read.
+    parameter_blocks: list[ParameterBlock] = field(default_factory=list)
+    # The parameter-definition registry: parameter_id -> every declaration
+    # of it in the descriptors, in file order (ParamDeclaration).
+    parameter_definitions: dict[int, list[ParamDeclaration]] = field(default_factory=dict)
     # is_not_key_frame of every Temporal Delimiter OBU, in file order (IAMF
     # v2.0.0: True = the temporal unit it opens is not a key frame).
     temporal_delimiter_is_not_key_frame: list[bool] = field(default_factory=list)

@@ -104,6 +104,40 @@ class ByteReader:
         return ByteReader(chunk, base=self.abs_pos - n)
 
 
+class BitReader:
+    """MSB-first bit reader over a ByteReader, for the few IAMF syntaxes whose
+    fields are not byte-aligned (the position parameter data of IAMF v2.0.0:
+    signed int (9), signed int (8), unsigned int (7) packed in sequence).
+
+    Bytes are pulled from the underlying reader one at a time, so every read
+    stays inside that reader's bounds and raises ParseError when they run out.
+    Bits left in the last byte pulled are not given back: the IAMF syntaxes
+    read through this end on a byte boundary."""
+
+    def __init__(self, r: ByteReader) -> None:
+        self._r = r
+        self._acc = 0
+        self._nbits = 0
+
+    def u(self, width: int) -> int:
+        while self._nbits < width:
+            self._acc = (self._acc << 8) | self._r.u8()
+            self._nbits += 8
+        self._nbits -= width
+        value = (self._acc >> self._nbits) & ((1 << width) - 1)
+        self._acc &= (1 << self._nbits) - 1
+        return value
+
+    def s(self, width: int) -> int:
+        v = self.u(width)
+        return v - (1 << width) if v & (1 << (width - 1)) else v
+
+    @property
+    def bits_pending(self) -> int:
+        """Bits pulled from the byte reader and not yet consumed."""
+        return self._nbits
+
+
 def split_bits(byte: int, *widths: int) -> list[int]:
     """Split one byte MSB-first into fields of the given bit widths.
 

@@ -195,9 +195,13 @@ Three of these do more than their one-line names say:
   extension bytes are not the v2.0.0 syntax.
 
 What it does **not** yet validate: positions over time — a position definition names a
-parameter substream, and the Parameter Block OBUs that carry it are not read, so only the
-default position is checked; parameter-block payloads of any kind, and the `parameter_id`s that
-tie them to their definitions; whether an object's audio substream is coded mono or stereo as
+parameter substream, and the Parameter Block OBUs that carry it are read (every declared
+`parameter_id` goes into a registry; each block's payload is decoded by its definition:
+positions, gains, demixing and recon-gain values, animation types, durations) and shown in the
+reports, but nothing judges them, so only the default position is checked; parameter-block
+payloads of any kind, and whether the `parameter_id`s that tie them to their definitions are
+unique, consistent or timed as the specification requires (a block whose payload cannot be read
+is a parse note, not a finding); whether an object's audio substream is coded mono or stereo as
 its `num_objects` requires when the codec is Opus, AAC-LC or FLAC (coded frames are not
 decoded; `S-217` covers LPCM only); whether a Mix Presentation that `S-216` reports still
 counts toward the profile rules of `S-109`; the Metadata OBU. What is not read is passed over
