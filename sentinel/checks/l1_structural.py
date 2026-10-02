@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 from .base import CheckContext, finding
-from ..findings import Finding
+from ..findings import Finding, Severity
 from .. import model as m
 
 KNOWN_CODECS = {"Opus", "ipcm", "fLaC", "mp4a"}
@@ -28,12 +28,31 @@ def run(mod: m.IAMFModel, ctx: CheckContext) -> Iterator[Finding]:
         if sh.ia_code != "iamf":
             yield finding(ctx, "S-101", f"ia_code is {sh.ia_code!r}, expected 'iamf'",
                           expected="iamf", found=sh.ia_code)
-        # S-102 profile recognised
-        for role, val in (("primary", sh.primary_profile), ("additional", sh.additional_profile)):
-            if val not in KNOWN_PROFILES:
-                yield finding(ctx, "S-102", f"{role}_profile {val} is reserved "
-                              f"(defined profiles are 0-5: "
-                              f"{', '.join(m.PROFILE_NAME.values())})", found=str(val))
+        # S-102 profile recognised. 6..255 are "Reserved for future profiles"
+        # (v2:695) in both fields, but the two do not weigh the same.
+        defined = "defined profiles are 0-5: " + ", ".join(m.PROFILE_NAME.values())
+        if sh.primary_profile not in KNOWN_PROFILES:
+            # At the registry severity (FAIL; a pack may override it): parsers
+            # SHOULD discard an IA Sequence whose primary_profile they do not
+            # support (v2:683), so nothing built to this specification is
+            # expected to play the stream.
+            yield finding(ctx, "S-102", f"primary_profile {sh.primary_profile} is "
+                          f"reserved ({defined}). A parser is told to discard an IA "
+                          "Sequence whose primary_profile it does not support, so "
+                          "no parser of a defined profile is expected to play this "
+                          "stream", found=str(sh.primary_profile))
+        if sh.additional_profile not in KNOWN_PROFILES:
+            # Always INFO: the text does not forbid a reserved value here, and
+            # describes the field as the place where a profile from a later
+            # version is signalled beside a primary one that older parsers
+            # know (v2:698-700).
+            yield finding(ctx, "S-102", f"additional_profile {sh.additional_profile} "
+                          f"is reserved ({defined}). The specification does not "
+                          "forbid this: the field can name a profile that a later "
+                          "version defines, beside a primary_profile that today's "
+                          "parsers support, so it is noted and not counted against "
+                          "the stream", found=str(sh.additional_profile),
+                          severity=Severity.INFO)
 
     # S-103 codec config valid
     if not mod.codec_configs:

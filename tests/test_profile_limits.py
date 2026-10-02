@@ -160,21 +160,77 @@ def test_defined_profiles_carry_no_s102_silent(profile):
     assert_silent(report)
 
 
-def test_reserved_profiles_say_reserved_at_the_registry_severity():
-    q = Seq(7, 200)
-    found = [f for f in q.mix([q.stereo()]).report().findings if f.check_id == "S-102"]
-    assert [f.severity for f in found] == [Severity.WARN, Severity.WARN]
-    assert found[0].message.startswith("primary_profile 7 is reserved")
-    assert found[1].message.startswith("additional_profile 200 is reserved")
-    for f in found:
-        assert "Advanced-2" in f.message and "0/1/2" not in f.message
+DEFINED_RANGE = ("defined profiles are 0-5: Simple, Base, Base-Enhanced, "
+                 "Base-Advanced, Advanced-1, Advanced-2")
 
 
-def test_reserved_additional_profile_alone_is_one_s102():
-    q = Seq(1, 9)
-    found = [f.message for f in q.mix([q.stereo()]).report().findings
-             if f.check_id == "S-102"]
-    assert len(found) == 1 and found[0].startswith("additional_profile 9 is reserved")
+def s102(report) -> list:
+    return [f for f in report.findings if f.check_id == "S-102"]
+
+
+def _stereo_sequence(primary: int, additional: int, pack: str = "generic"):
+    q = Seq(primary, additional)
+    q.mix([q.stereo()])
+    report = validate_bytes(B.build(q.spec), profile=pack)
+    assert report.execution_error is None
+    return report
+
+
+@pytest.mark.parametrize("value", range(6))
+def test_defined_primary_profile_silent(value):
+    assert s102(_stereo_sequence(value, 1)) == []
+
+
+@pytest.mark.parametrize("value", [6, 255])
+def test_reserved_primary_profile_is_a_fail_fires(value):
+    report = _stereo_sequence(value, 1)
+    (f,) = s102(report)
+    assert f.severity == Severity.FAIL
+    assert f.message.startswith(f"primary_profile {value} is reserved ({DEFINED_RANGE}). ")
+    assert "told to discard" in f.message and "0/1/2" not in f.message
+    assert report.exit_code() == 1
+
+
+@pytest.mark.parametrize("value", range(6))
+def test_defined_additional_profile_silent(value):
+    assert s102(_stereo_sequence(1, value)) == []
+
+
+@pytest.mark.parametrize("value", [6, 255])
+def test_reserved_additional_profile_alone_is_an_info_fires(value):
+    report = _stereo_sequence(1, value)
+    (f,) = s102(report)
+    assert f.severity == Severity.INFO
+    assert f.message.startswith(f"additional_profile {value} is reserved ({DEFINED_RANGE}). ")
+    assert "does not forbid" in f.message
+    assert [x.check_id for x in report.findings] == ["S-102"]
+    assert report.exit_code() == 0 and report.exit_code(Severity.WARN) == 0
+
+
+def test_both_profiles_reserved_is_one_fail_and_one_info_fires():
+    report = _stereo_sequence(7, 200)
+    assert [(f.severity, f.message.split(" is ")[0]) for f in s102(report)] == [
+        (Severity.FAIL, "primary_profile 7"), (Severity.INFO, "additional_profile 200")]
+    assert report.exit_code() == 1
+
+
+def test_s102_registry_severity_is_the_primary_case():
+    from sentinel.findings import REGISTRY
+    assert REGISTRY["S-102"].default_severity == Severity.FAIL
+
+
+@pytest.mark.parametrize("override,primary_exit", [("WARN", 0), ("INFO", 0), ("FAIL", 1)])
+def test_pack_moves_the_reserved_primary_case_only(tmp_path, monkeypatch,
+                                                   override, primary_exit):
+    _packs(tmp_path, monkeypatch, tuned=f'[severity]\nS-102 = "{override}"')
+    for value in (6, 255):
+        report = _stereo_sequence(value, 1, pack="tuned")
+        assert [f.severity.label for f in s102(report)] == [override]
+        assert report.exit_code() == primary_exit
+        report = _stereo_sequence(1, value, pack="tuned")
+        assert [f.severity for f in s102(report)] == [Severity.INFO]
+        assert report.exit_code() == 0
+    assert s102(_stereo_sequence(5, 5, pack="tuned")) == []
 
 
 def test_reserved_primary_profile_keeps_s109_silent():
