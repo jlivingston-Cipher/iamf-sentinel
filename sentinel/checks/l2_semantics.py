@@ -40,7 +40,7 @@ from .base import CheckContext, finding
 from ..findings import Finding, Severity
 from .. import model as m
 from ..layouts import (LOUDSPEAKER_LAYOUT, RESERVED_LOUDSPEAKER_LAYOUTS,
-                       EXPANDED_LOUDSPEAKER_LAYOUT)
+                       EXPANDED_LOUDSPEAKER_LAYOUT, channel_group_counts)
 
 _TEMPLATE_ANNOTATIONS = ("test_mix_pres", "test_sub_mix_", "test_audio_element",
                          "testmix", "default mix presentation", "mainelement")
@@ -70,6 +70,7 @@ def _channel_topology(mod: m.IAMFModel, ctx: CheckContext) -> Iterator[Finding]:
 
         cum_sub = cum_coupled = 0
         top_layout = None
+        below = None      # loudspeaker_layout of the layer under this one
         for i, layer in enumerate(ae.channel_layers):
             lsl = layer.loudspeaker_layout
             # reserved / expanded handling
@@ -88,6 +89,7 @@ def _channel_topology(mod: m.IAMFModel, ctx: CheckContext) -> Iterator[Finding]:
                 cum_sub += layer.substream_count
                 cum_coupled += layer.coupled_substream_count
                 top_layout = None
+                below = lsl
                 continue
 
             cl = LOUDSPEAKER_LAYOUT.get(lsl)
@@ -102,23 +104,48 @@ def _channel_topology(mod: m.IAMFModel, ctx: CheckContext) -> Iterator[Finding]:
             if cl and cl.name == "Mono" and layer.coupled_substream_count != 0:
                 yield finding(ctx, "S-201", "Mono layout cannot have a coupled substream",
                               where=where, expected="0 coupled", found=str(layer.coupled_substream_count))
+
+            # S-201 layer topology: a layer declares the substreams of its own
+            # Channel Group (coupled-pairs-first invariant). The first layer's
+            # group is its whole layout; a layer above it holds only what its
+            # layout adds to the layer below (v2:1180-1193), so the counts
+            # follow from the pair of layouts, not from the top layout alone:
+            # over a Mono first layer L2 is a substream of its own and never
+            # half of a coupled L/R (v2:1185, v2:1039). A layout that the
+            # Channel Layout Generation Rule does not let follow the layer
+            # below (v2:1167-1171), a Binaural layer of a scalable element
+            # (v2:964) and a layer above an expanded layout (v2:1138) have no
+            # Channel Group to be counted against.
+            want = channel_group_counts(below, lsl)
+            over = (cl.name if below is None
+                    else f"{cl.name} over {LOUDSPEAKER_LAYOUT[below].name}")
+            if want is None:
+                yield finding(
+                    ctx, "S-201",
+                    f"layer {i}: {over} is not a step a scalable element can take — "
+                    f"no Channel Group is defined for it",
+                    where=where,
+                    expected="surround, LFE and height channel counts that never decrease "
+                             "and are not all equal; Binaural and expanded layouts only "
+                             "as a single layer",
+                    found=over)
+            elif want != (layer.substream_count, layer.coupled_substream_count):
+                what = (f"declared {cl.name} layout" if below is None
+                        else f"what layer {i} adds ({over})")
+                yield finding(
+                    ctx, "S-201",
+                    f"substream topology does not match {what} — "
+                    f"an F4-class silent-corruption signature",
+                    where=where,
+                    expected=f"{want[0]} substreams ({want[1]} coupled) for {over}",
+                    found=f"{layer.substream_count} substreams "
+                          f"({layer.coupled_substream_count} coupled)")
             cum_sub += layer.substream_count
             cum_coupled += layer.coupled_substream_count
             top_layout = cl
+            below = lsl
 
-        # S-201 top-layout consistency: cumulative substreams/coupled must equal
-        # the final layout's canonical topology (coupled-pairs-first invariant).
         if top_layout and top_layout.expected_substreams >= 0:
-            if (cum_sub != top_layout.expected_substreams or
-                    cum_coupled != top_layout.expected_coupled):
-                yield finding(
-                    ctx, "S-201",
-                    f"substream topology does not match declared {top_layout.name} layout — "
-                    f"an F4-class silent-corruption signature",
-                    where=where,
-                    expected=f"{top_layout.expected_substreams} substreams "
-                             f"({top_layout.expected_coupled} coupled) for {top_layout.name}",
-                    found=f"{cum_sub} substreams ({cum_coupled} coupled)")
             # channel-count implied by topology
             implied_ch = 2 * cum_coupled + (cum_sub - cum_coupled)
             if implied_ch != top_layout.channels:

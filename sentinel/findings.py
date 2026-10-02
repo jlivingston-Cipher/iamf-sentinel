@@ -101,7 +101,9 @@ _reg(CheckSpec("S-109", "Profile constraints", "L1", S.WARN,
 # L2 channel-semantics (F4 killer)
 _reg(CheckSpec("S-201", "Substream topology vs declared layout", "L2", S.FAIL, ("F4",),
                "Declared substream_count/coupled_substream_count match the loudspeaker_layout "
-               "(coupled pairs first, C/LFE last). The F4 silent-corruption detector."))
+               "(coupled pairs first, C/LFE last), layer by layer: the whole layout for the "
+               "first layer, what its layout adds to the layer below for each layer above "
+               "it. The F4 silent-corruption detector."))
 _reg(CheckSpec("S-202", "Substream count consistency", "L2", S.FAIL, ("F4",),
                "num_substreams equals the layer topology; coupled<=substream; mono has no coupled."))
 _reg(CheckSpec("S-203", "Ambisonics completeness", "L2", S.FAIL, ("F2", "F3"),

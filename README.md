@@ -74,7 +74,8 @@ keeps the embedded core finding-identical to this package.
   bounds-checked; truncated or fuzzed input yields a structured finding, never a crash (a 63k-call
   bounded-fuzz acceptance pass: no hangs, no uncaught exceptions).
 - **L2 — channel semantics (the corruption killer).** Substream topology vs declared layout
-  (coupled-pairs-first invariant), coupled/mono sanity, ambisonics (N+1)²/ACN completeness,
+  (coupled-pairs-first invariant; a scalable element layer by layer, each layer against what
+  its layout adds to the layer below), coupled/mono sanity, ambisonics (N+1)²/ACN completeness,
   dropped/duplicated/spurious substreams, annotation-presence.
 - **Objects and rendering settings (`S-210`…`S-217`).** An object-based element's object count
   and configuration; that each object element's rendering settings carry a position definition

@@ -22,8 +22,9 @@ class ChannelLayout:
 
 
 # loudspeaker_layout (4-bit) -> layout.  The (substreams, coupled) pair is what
-# a single-layer element MUST declare; scalable multi-layer elements are the
-# incremental deltas between layers and are checked separately.
+# a single-layer element MUST declare, and what the first layer of a scalable
+# element declares; the layers above it declare only what they add to the
+# layer below (channel_group_counts, further down).
 LOUDSPEAKER_LAYOUT: dict[int, ChannelLayout] = {
     0: ChannelLayout("Mono", 1, 1, 0),
     1: ChannelLayout("Stereo", 2, 1, 1),
@@ -40,6 +41,24 @@ LOUDSPEAKER_LAYOUT: dict[int, ChannelLayout] = {
 }
 
 RESERVED_LOUDSPEAKER_LAYOUTS = {10, 11, 12, 13, 14}
+
+# X.Y.Z of each loudspeaker_layout a scalable element may layer: surround, LFE
+# and height channel counts, as the Channel Layout Generation Rule reads a
+# layout (v2:1168, v1.1:1110, err:1043; the prefixes are source lines of
+# index.bs in IAMF v2.0.0 at 4d2c6da, in v1.1.0 and in v1.0.0-errata).
+# Binaural (9) and the expanded layouts (15) have no row: with either,
+# num_layers is 1 (v2:964, v2:1138).
+LAYOUT_XYZ: dict[int, tuple[int, int, int]] = {
+    0: (1, 0, 0),      # Mono
+    1: (2, 0, 0),      # Stereo
+    2: (5, 1, 0),      # 5.1
+    3: (5, 1, 2),      # 5.1.2
+    4: (5, 1, 4),      # 5.1.4
+    5: (7, 1, 0),      # 7.1
+    6: (7, 1, 2),      # 7.1.2
+    7: (7, 1, 4),      # 7.1.4
+    8: (3, 1, 2),      # 3.1.2
+}
 
 # expanded_loudspeaker_layout (8-bit, only when loudspeaker_layout == 15).
 # Base-Enhanced profile feature (IAMF v1.1.0). Names per spec; counts are
@@ -132,3 +151,44 @@ def order_from_ambisonics_channels(n: int) -> int | None:
         return None
     root = int(round(n ** 0.5))
     return root - 1 if root * root == n else None
+
+
+def channel_group_counts(below: int | None, lsl: int) -> tuple[int, int] | None:
+    """(substream_count, coupled_substream_count) of the Channel Group that a
+    layer of loudspeaker_layout ``lsl`` (0..9) carries.
+
+    ``below`` is the loudspeaker_layout of the layer under it, None for the
+    first layer. The first layer's group is its whole layout: the table row.
+    A layer above it carries only the channels its layout adds (Channel Group
+    Format, v2:1180-1193; v1.1:1120-1133 and err:1053-1066 say the same), each
+    pair of coupled stereo channels as one substream and every other channel
+    as one substream of its own (v2:1037-1039):
+
+        surround  2 in (X below, X]   L2            1 substream, not coupled
+                  3                   Centre        1 substream, not coupled
+                  5                   L5/R5         1 coupled substream
+                  7                   Lss7/Rss7     1 coupled substream
+        LFE       Y below < Y         LFE           1 substream, not coupled
+        height    Z below < Z         top pairs     (Z - Z below) / 2 coupled
+
+    L2 alone is not a pair, which is why a Mono first layer leaves the whole
+    element one substream more and one coupled substream fewer than the same
+    top layout coded as a single layer. From any other first layer the layers
+    sum to the top layout's table row.
+
+    None when the specification defines no such group: the two layouts do not
+    follow the Channel Layout Generation Rule (v2:1167-1171: X, Y and Z never
+    decrease and are not all equal), or one of them is Binaural or an expanded
+    layout, which a scalable element does not contain.
+    """
+    if below is None:
+        cl = LOUDSPEAKER_LAYOUT[lsl]
+        return cl.expected_substreams, cl.expected_coupled
+    if below not in LAYOUT_XYZ or lsl not in LAYOUT_XYZ:
+        return None
+    (px, py, pz), (x, y, z) = LAYOUT_XYZ[below], LAYOUT_XYZ[lsl]
+    if px > x or py > y or pz > z or (px, py, pz) == (x, y, z):
+        return None
+    coupled = (px < 5 <= x) + (px < 7 <= x) + (z - pz) // 2
+    single = (px < 2 <= x) + (px < 3 <= x) + (y - py)
+    return coupled + single, coupled
