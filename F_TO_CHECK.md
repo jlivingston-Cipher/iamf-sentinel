@@ -8,6 +8,11 @@ validator** (a build-environment, encode-time, or runtime issue that is not a
 property of a produced IAMF file — several of these belong to the packager
 "Loom" or a pre-flight ADM validator, not to Sentinel).
 
+The **Symptom** column records each failure mode as it was catalogued,
+against the tool versions tested at the time; it is not a statement about
+upstream as it is today. Where upstream has moved since, the state as read
+on 2026-10-01 is in *Upstream status* below.
+
 Status is proven by the shipped test suites — real samples, the regenerated F4
 essence-misroute pair, the full mutation battery, and a bounded-fuzz acceptance
 pass; see the per-repo CI gates for the current figures. **Phase 2 (executed,
@@ -49,8 +54,8 @@ own BS.1770-4 measurement.
 | F | Symptom (short) | Sentinel status | Check(s) | Notes |
 |---|---|---|---|---|
 | **F27** | Declared digital peak is pre-codec; decoded output exceeds it (+3.46 dB measured, Opus 7.1.4) | ✅ Phase 2 | **S-311** | Declared peak is not a decoded-peak bound; loudness survives coding (Δ0.000 LU) but peaks do not. |
-| **F28** | Neither reference decoder decodes the A/V MP4 deliverable (decoder_main raw-only; iamfdec `-i1` SIGSEGV on video hdlr) | ✅ Phase 2 (worked around) | — | Sentinel extracts the raw IAMF stream clean-room from the sample tables and oracles that. Disclosure-grade (iamfdec crash). |
-| **F29** | *(re-adjudicated docs 64/65 — FFmpeg defect, not a convention split)* ffmpeg `ebur128`'s BACK_MASK weights rears **and top-backs** 1.41 where BS.1770-4 Tables 4/5 say 1.00 (+1.5 LU per over-weighted channel, ≈+0.6 LU aggregate on equal-level 7.1.4 — doc 66 §4); iamf-tools is Table-conformant 12/12 | ✅ Phase 2, tables corrected by **F33** (doc 69) | S-310 | Sentinel measures with the BS.1770-4 tables directly (matching the declared-value producer by construction); `FFMPEG_WEIGHTS` kept solely to model ffmpeg's behaviour for cross-checks. QC-ing IAMF with ffmpeg at tight tolerance flags correct files. **FILED 2026-07-31 as FFmpeg/FFmpeg#23968** (`code.ffmpeg.org` tracker issue, doc 94; currency re-verified on master `5f832b7`, duplicate re-search CLEAR on both trackers with positive controls, docs 66/94) — awaiting maintainer response; patch offered for either scope (minimal: drop `AV_CH_TOP_BACK_*` from `BACK_MASK`; full: key weights on BS.1770 Table 5 positions). |
+| **F28** | *(as catalogued, against libiamf v1.1.0 and the iamf-tools pin of that date; the iamfdec half is no longer current upstream — see Upstream status)* Neither reference decoder decodes the A/V MP4 deliverable (decoder_main raw-only; iamfdec `-i1` SIGSEGV on video hdlr) | ✅ Phase 2 (worked around) | — | Sentinel extracts the raw IAMF stream clean-room from the sample tables and oracles that. Disclosure-grade (iamfdec crash). |
+| **F29** | *(re-adjudicated docs 64/65 — FFmpeg defect, not a convention split; as catalogued, and still so at the FFmpeg n8.1.3 release tag; the top-back half is no longer current on FFmpeg master — see Upstream status)* ffmpeg `ebur128`'s BACK_MASK weights rears **and top-backs** 1.41 where BS.1770-4 Tables 4/5 say 1.00 (+1.5 LU per over-weighted channel, ≈+0.6 LU aggregate on equal-level 7.1.4 — doc 66 §4); iamf-tools is Table-conformant 12/12 | ✅ Phase 2, tables corrected by **F33** (doc 69) | S-310 | Sentinel measures with the BS.1770-4 tables directly (matching the declared-value producer by construction); `FFMPEG_WEIGHTS` kept solely to model ffmpeg's behaviour (as released) for cross-checks. QC-ing IAMF with ffmpeg at tight tolerance flags correct files. **FILED 2026-07-31 as FFmpeg/FFmpeg#23968** (`code.ffmpeg.org` tracker issue, doc 94; currency re-verified on master `5f832b7`, duplicate re-search CLEAR on both trackers with positive controls, docs 66/94), with a patch offered for either scope (minimal: drop `AV_CH_TOP_BACK_*` from `BACK_MASK`; full: key weights on BS.1770 Table 5 positions). **Closed 2026-08-06 — see Upstream status (as read 2026-10-01).** |
 | **F33** | *(internal, found doc 66 §5, fixed doc 69)* Sentinel's own primary 7.1/7.1.2/7.1.4 tables carried rears (M±135) at 1.41 — the F29 defect class in our own tree, fossilized behind a comment citing a premise doc 64 refuted | ✅ **FIXED** (doc 69): dsp.py + C++ kernel, differential 15/15, regression pin `test_channel_weights_bs1770_conformance` | S-310 (feeds) | Round-trip pin moved −8.688 → −8.974 (weighted path only; unweighted −9.12 unmoved). Heights were always correct; 5.1-family tables were always conformant. **Cross-ecosystem (2026-08-04): also found + fixed independently in Inseglet 1.5.1 (the same author's REAPER MCP extension) — its bed table carried the same M±135 over-weight AND a second boundary cell this fix did not surface: wides Lw/Rw (M±060, 9.1.6, boundary-inclusive) at 1.00 where Table 5 says 1.41. Its `unit.bed_weights` pin mirrors sentinel-pro's conformance vectors as a hard-coded second witness. |
 | **F34** | *(internal, found doc 69 §4 — unmasked by the F33 fix, defect pre-existing)* Loom's ffmpeg one-shot backend injected **ebur128-measured** declared loudness; on 7.1.x layouts those values carried F29's over-weighting (measured −0.554 LU on the parity content) — the emitted file was non-conformant and S-310 correctly FAILed it under the Loom gate | ✅ **FIXED** (doc 70): every Loom `measure_bs1770` step reroutes to the `sentinel-dsp` kernel (one argv, one JSON, all three figures); xfails removed, Loom 235/0; post-fix measured-vs-declared ≤0.005 LU on both oracles | S-310 (detects) | Invisible pre-F33 because Sentinel's own error partially cancelled ffmpeg's (top-backs-only residual ≈0.29 LU < ±0.5). Covers inject AND normalize AND preview paths by construction (the measure step is the reroute point). iamf-tools backend was never affected. `loom 0.8.0`. |
 
@@ -58,8 +63,33 @@ own BS.1770-4 measurement.
 
 | F | Symptom (short) | Sentinel status | Check(s) | Notes |
 |---|---|---|---|---|
-| **F31** | FFmpeg's IAMF `-c copy` silently strips `num_samples_to_trim_at_start` from the Audio Frame OBUs and writes `elst media_time=0` — value irrecoverable, no warning at any log level (release pin **and** master) | ✅ Phase 3c | **S-407, S-408, S-409** | S-407: OBU trim present but edts/elst missing or `media_time` ≠ Σ start-trim (IAMF v1.1.0 §6.2.2 **SHALL**). S-408: Σstts ≠ TUs×nspf − end-trim (§6.2.2 duration model). S-409: Opus `pre_skip` > 0 with no trim fields anywhere — the remux fingerprint, raw or MP4. Executed on the doc-57 evidence files: `ffmpeg-remux.mp4` → S-408+S-409; raw `-c copy` → S-409; the encode path stays clean (ADR-1 unaffected). |
-| **F32** | *(adjudicated doc 60 — GPAC/MP4Box, current on master)* MP4Box IA-sample durations `1`/`959` violate §6.2.2's duration model **and contradict the file's own elst**; FFmpeg (conformant edit-list handling) discards TU0 whole → 648 samples of content lost | ✅ Phase 3c | **S-408** | Executed matrix (doc 60 §2): as-written → FFmpeg −648 / iamfdec ✓ / S-408; stts patched to the §6.2.2 model → **both decoders exact**, S-408 silent; edts removed → FFmpeg exact, S-407 FAIL. FFmpeg demuxer exonerated at source level (`mov_fix_index` whole-frame discard is generic 14496-12 behaviour). **FILED 2026-07-29 as gpac/gpac#3826** (issue + patch offer, doc 71; duplicate search CLEAR with open-control, docs 63/71) — awaiting maintainer response; PR ready on agreement. **Repaired in-product (item 13, doc 84):** every Loom MP4Box remux is followed by a `repair_stts` step — byte-size-preserving rewrite of the timing tables to the §6.2.2 model (doc 60's proven `conform` surgery), no-op on conformant tables, so it self-retires at the removal trigger (gpac fix merged AND released). |
+| **F31** | *(as catalogued 2026-07; no longer current upstream — see Upstream status)* FFmpeg's IAMF `-c copy` silently strips `num_samples_to_trim_at_start` from the Audio Frame OBUs and writes `elst media_time=0` — value irrecoverable, no warning at any log level (release pin **and** master of that date) | ✅ Phase 3c | **S-407, S-408, S-409** | S-407: OBU trim present but edts/elst missing or `media_time` ≠ Σ start-trim (IAMF v1.1.0 §6.2.2 **SHALL**). S-408: Σstts ≠ TUs×nspf − end-trim (§6.2.2 duration model). S-409: Opus `pre_skip` > 0 with no trim fields anywhere — the remux fingerprint, raw or MP4. Executed on the doc-57 evidence files: `ffmpeg-remux.mp4` → S-408+S-409; raw `-c copy` → S-409; the encode path stays clean (ADR-1 unaffected). |
+| **F32** | *(adjudicated doc 60 — GPAC/MP4Box; current on master when adjudicated, 2026-07, and no longer so — see Upstream status)* MP4Box IA-sample durations `1`/`959` violate §6.2.2's duration model **and contradict the file's own elst**; FFmpeg (conformant edit-list handling) discards TU0 whole → 648 samples of content lost | ✅ Phase 3c | **S-408** | Executed matrix (doc 60 §2): as-written → FFmpeg −648 / iamfdec ✓ / S-408; stts patched to the §6.2.2 model → **both decoders exact**, S-408 silent; edts removed → FFmpeg exact, S-407 FAIL. FFmpeg demuxer exonerated at source level (`mov_fix_index` whole-frame discard is generic 14496-12 behaviour). **FILED 2026-07-29 as gpac/gpac#3826** (issue + patch offer, doc 71; duplicate search CLEAR with open-control, docs 63/71). **Closed 2026-08-26 — see Upstream status (as read 2026-10-01).** **Repaired in-product (item 13, doc 84):** every Loom MP4Box remux is followed by a `repair_stts` step — byte-size-preserving rewrite of the timing tables to the §6.2.2 model (doc 60's proven `conform` surgery), no-op on conformant tables, so it self-retires at the removal trigger (gpac fix merged AND released). |
+
+## Upstream status (as read 2026-10-01)
+
+The tables above record each failure mode as it was catalogued. This table adds where each
+one stands upstream, read on 2026-10-01 from the upstream trackers, release tags and commits.
+It is a dated reading and is not kept live. An upstream fix does not retire a row: tool
+versions that pre-date the fix still exhibit the failure, and the checks mapped above are
+unchanged. Rows not listed carry no upstream status here.
+
+| F | Upstream | Status as read 2026-10-01 |
+|---|---|---|
+| **F15** | AOMediaCodec/iamf-tools#68 | Fixed upstream by a merged pull request from this project's author (#79, merged 2026-08-05 as `04bc8c8e`; #68 closed the same day); released in iamf-tools v3.0.0. |
+| **F16** | AOMediaCodec/iamf-tools#69 | Fixed upstream by a merged pull request from this project's author (#102, merged 2026-09-11; #69 closed on that merge); released in iamf-tools v3.0.0. F18, filed in the same issue, is not fixed by it. |
+| **F17** | AOMediaCodec/iamf-tools#70 | Open; not fixed. Documented upstream by a merged pull request from this project's author (#103, merged 2026-09-10, in iamf-tools v3.0.0), which documents `--adm_importance_threshold` as a metadata-only filter; the render behaviour stands. A further pull request from this project's author (#97) is open, not merged. |
+| **F18** | AOMediaCodec/iamf-tools#87 (first filed within #69) | Open; not fixed. #102, which closed #69, does not fix it. Filed on its own as #87 (2026-09-07); a pull request from this project's author (#105, opened 2026-09-21) is open, not merged. |
+| **F19** | AOMediaCodec/iamf-tools#71 | Fixed upstream by a merged pull request from this project's author (#81, merged 2026-09-02; #71 closed on that merge); released in iamf-tools v3.0.0. |
+| **F20** | AOMediaCodec/iamf-tools#72 | Open; no upstream fix. |
+| **F24** | AOMediaCodec/iamf-tools#73 | Fixed upstream by a merged pull request from this project's author (#82, merged 2026-08-28; #73 closed on that merge); released in iamf-tools v3.0.0. |
+| **F28** | AOMediaCodec/libiamf#170 | iamfdec crash: fixed and released in libiamf v2.0.0; affected the v1.1.0 release tag only. libiamf v2.0.0 was released 2026-09-21; the fix (`3da4c44`) pre-dates the report. No upstream status is recorded here for the decoder_main half of the row. |
+| **F29** | FFmpeg/FFmpeg#23968, #24284 (`code.ffmpeg.org`) | Top-back half: reported; fixed upstream, credited by issue reference — #23968 was closed 2026-08-06; the fix is commit `fc02470c`, following another contributor's pull request (#24024). The fix is on FFmpeg master and not in a release: n8.1.3 still carries `BACK_MASK`. Rear-pair half (`AV_CH_BACK_LEFT`/`AV_CH_BACK_RIGHT` at 1.41 on 7.1-derived layouts): filed separately as #24284 (2026-08-26); open. |
+| **F31** | FFmpeg/FFmpeg#24285 (`code.ffmpeg.org`) | Start-trim loss on `-c copy`: reported; fixed upstream, credited by issue reference; released in FFmpeg n8.1.3. #24285 was opened 2026-08-26 and closed 2026-09-07; the fix is a maintainer's pull request (#24286), merged 2026-08-28 as `3acec0a1`. n8.1.3 carries it as backport `1005b294ff`, so `git tag --contains 3acec0a1` does not list that tag. |
+| **F32** | gpac/gpac#3826 | Fixed on gpac master (`bc1fb9d8fc`); attribution open — the commit references no issue, and no credit is claimed here. Not in a release: `v26.07.0`, the latest gpac release, does not contain it. #3826 was closed 2026-08-26 by its reporter. Loom's `repair_stts` step stays until a gpac release carries the fix. |
+
+*Credited by issue reference* means that the fixing commit's message cites the issue, and no
+more than that: neither FFmpeg fix carries a `Reported-by:` trailer.
 
 ## Coverage summary (post-Phase 2)
 
@@ -72,9 +102,59 @@ own BS.1770-4 measurement.
 
 `S-101` sequence-header presence/order · `S-102` profile recognised ·
 `S-103` codec-config validity · `S-104/S-105` element/mix presence ·
-`S-106` referential integrity · `S-107` OBU ordering · `S-108` clean parse
-(truncation) · `S-109` profile constraints · `S-401` IAMF brand ·
+`S-106` referential integrity · `S-107` OBU ordering · `S-108` clean parse ·
+`S-109` profile constraints · `S-401` IAMF brand ·
 `S-402` fast-start · `S-404` IAMF sample entry.
+
+Three of these do more than their one-line names say:
+
+- **`S-102` profile recognised.** `primary_profile` and `additional_profile` are read against the
+  six defined profiles (0–5: Simple, Base, Base-Enhanced, Base-Advanced, Advanced-1, Advanced-2);
+  6–255 are reserved. A reserved `primary_profile` is a FAIL: a parser is told to discard such
+  a sequence. A reserved `additional_profile` is INFO only: the specification does not forbid it.
+- **`S-108` clean parse.** Every genuine parse error is reported, whatever its kind: a truncated
+  or oversized OBU; a field that cannot be read inside an OBU; a reserved header bit set where
+  IAMF v2.0.0 requires 0; a Mix Presentation optional-fields envelope too short to hold its
+  fields; an ObjectsConfig that cannot be read in a sequence that declares profile 3, 4 or 5;
+  and, in MP4, a parse problem met while walking the samples, or sample tables that cannot be
+  followed (a fragmented file's samples are not walked). What is passed over for forward
+  compatibility — an unknown OBU type, a config that is not modelled — is a note, not a finding.
+- **`S-109` profile constraints.** The limits of the declared profiles, computed from the stream
+  for each of the six profiles. Per Mix Presentation: the number of audio elements, the channels
+  before mixing and the number of sub-mixes the profile admits; for Base, how many of its elements
+  may be scalable or scene-based; for the profiles defined before v2.0.0 (Simple, Base,
+  Base-Enhanced), no object-based elements. Per sequence: the number of unique Codec Config OBUs,
+  the channel total across Audio Elements where the additional profile sets one, and
+  Base-Advanced's rule for its first Mix Presentation. What a profile obliges of a bitstream is
+  narrow — at least one Mix Presentation has to fit `primary_profile` — so there are three
+  outcomes: FAIL when no Mix Presentation fits `primary_profile` or a sequence-wide requirement is
+  broken; WARN when one Mix Presentation fits neither declared profile while another fits; INFO
+  when the answer turns on a point the specification leaves open. A count that cannot be read is
+  never guessed: it adds nothing to a total, and a limit is reported as exceeded only when the
+  counts that can be read exceed it on their own. The limit values, their specification citations
+  and the points deliberately left unjudged are in `sentinel/checks/l1_profile.py`. A platform
+  pack's own profile requirement is reported under `S-109` as well.
+
+**IAMF v2.0.0 content.** What the validator reads and checks:
+
+- **Header semantics.** OBU header bit 6 is read by OBU type, as IAMF v2.0.0 defines it: the
+  trimming flag on audio frames, the optional-fields flag on a Mix Presentation, the
+  not-a-key-frame flag on a Temporal Delimiter, reserved on every other type. Set on a Sequence
+  Header, Codec Config, Audio Element or Parameter Block OBU, it is an `S-108` finding.
+- **Mix Presentation optional fields.** When the flag is set, the tags are walked and the
+  optional-fields envelope and its two preferred-renderer bytes are read; an envelope too short
+  to hold them is an `S-108` finding. The values are recorded, not judged.
+- **The six profiles and their limits** — `S-102` and `S-109`, as above.
+- **ObjectsConfig object counts.** `num_objects` is read from each object-based element and
+  counted, one channel per object, toward the profile limits. The value itself is not judged. An
+  ObjectsConfig that cannot be read, in a sequence that declares profile 3, 4 or 5, is an `S-108`
+  finding.
+
+What it does **not** yet validate: the contents of object-based elements beyond that count;
+rendering and position parameters; parameter-block payloads; the Metadata OBU. These are passed
+over inside the size fields that carry them, without a finding, so a clean report says nothing
+about them. The Pro rendered checks (`S-31x`/`S-32x`) are not yet calibrated for v2.0.0 content.
+Anything IAMF v2.0.0 adds that is not in the list above is not validated.
 
 ## Pro checks: source-referenced (S-33x) and intent-referenced (S-34x)
 

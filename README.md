@@ -9,6 +9,8 @@ no native build, no toolchain.
 
 > **Scope.** Checks are written against the **AOM IAMF v1.1.0** specification
 > and ISO/IEC 14496-12, and cross-checked against the AOM reference tools. The
+> tool reads IAMF v2.0.0 streams and recognises its six profiles and checks
+> their limits; object and position validation are not yet implemented. The
 > tool is **spec- and reference-validated, not platform-certified**: a
 > `--profile` name (e.g. `youtube`) applies the publicly-known shape
 > constraints for that target, not a guarantee of acceptance by that platform's
@@ -65,7 +67,7 @@ keeps the embedded core finding-identical to this package.
 
 ## What the free core checks
 
-- **L1 — structural (clean-room OBU parser, written from the AOM IAMF v1.1.0 spec).** Every read is
+- **L1 — structural (clean-room OBU parser, written from the AOM IAMF v1.1.0 and v2.0.0 specs).** Every read is
   bounds-checked; truncated or fuzzed input yields a structured finding, never a crash (a 63k-call
   bounded-fuzz acceptance pass: no hangs, no uncaught exceptions).
 - **L2 — channel semantics (the corruption killer).** Substream topology vs declared layout
@@ -78,7 +80,7 @@ keeps the embedded core finding-identical to this package.
 - **The CI contract.** Stable check-ID taxonomy (`S-1xx` structural / `S-2xx` semantic / `S-3xx`
   loudness / `S-4xx` container), FAIL/WARN/INFO severities, `json | text | html` reports, and a
   declarative `generic` profile. **This is the surface you cite:** "passes iamf-sentinel `S-1xx…S-4xx`
-  at v0.3.3." (This example is version-coupled: it moves with every release.)
+  at v0.4.0." (This example is version-coupled: it moves with every release.)
 
 ## What's in the Pro plugin (`iamf-sentinel-pro`) — also free, Apache-2.0
 
@@ -132,7 +134,7 @@ Apache-2.0 (see `LICENSE` / `NOTICE`) — and not just this core: **the whole st
 software under Apache-2.0** — this package, the `iamf-sentinel-pro` plugin (L3 rendered QC,
 ADM fidelity, profile packs), the `sentinel-dsp` measurement kernel, and the Loom
 manifest-driven packager. The parser and all checks are original clean-room works written
-from the AOM IAMF v1.1.0 spec and ISO/IEC 14496-12; no reference-decoder or encoder source
+from the AOM IAMF v1.1.0 and v2.0.0 specs and ISO/IEC 14496-12; no reference-decoder or encoder source
 is used or derived. Reference decoders are invoked only as subprocess oracles, and only by
 the separate `-pro` plugin.
 
