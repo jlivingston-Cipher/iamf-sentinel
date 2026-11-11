@@ -7,6 +7,7 @@
     sentinel batch DIR [--l3 ...]
     sentinel adm-compare ADM_WAV IAMF [--layout L]      # Pro: ADM master vs IAMF deliverable
     sentinel intent-compare SIDECAR ADM_WAV             # Pro: intent sidecar vs delivered ADM
+    sentinel adm-info ADM_WAV [--format json|text]       # an ADM master's chunks + Dolby's dbmd
 
 Exit codes: 0 pass · 1 findings at/above threshold · 2 execution error.
 """
@@ -198,6 +199,29 @@ def _cmd_batch(args: argparse.Namespace) -> int:
     return worst
 
 
+def _cmd_adm_info(args: argparse.Namespace) -> int:
+    # Imported here, not at the top: the browser inspector embeds this module
+    # and not bwf/dbmd (wasm/make_inspector.py's file list).
+    from .bwf import adm_info, render_text as bwf_text
+    worst = 0
+    infos = []
+    for path in args.files:
+        try:
+            info = adm_info(path)
+        except OSError as e:
+            print(f"error: {path}: {e}", file=sys.stderr)
+            worst = 2
+            continue
+        if not info.get("container"):
+            worst = max(worst, 2)
+        infos.append(info)
+    if args.format == "json":
+        print(json.dumps(infos[0] if len(infos) == 1 else infos, indent=2))
+    else:
+        print("\n\n".join(bwf_text(i) for i in infos))
+    return worst
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sentinel", description="IAMF conformance & QC validator")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -252,6 +276,14 @@ def build_parser() -> argparse.ArgumentParser:
     ic.add_argument("--workdir", help="keep isolation renders here instead of a temp dir")
     ic.add_argument("--format", choices=["text", "json"], default="text")
     ic.set_defaults(func=_cmd_intent_compare)
+
+    ai = sub.add_parser("adm-info",
+                        help="read an ADM BWF master's structure and Dolby's dbmd "
+                             "chunk (frame rate, first frame of action, downmix "
+                             "and headphone settings); reads, judges nothing")
+    ai.add_argument("files", nargs="+", help="ADM BWF masters (.wav)")
+    ai.add_argument("--format", choices=["text", "json"], default="text")
+    ai.set_defaults(func=_cmd_adm_info)
 
     b = sub.add_parser("batch", help="validate every .iamf/.mp4 under a directory (roll-up)")
     b.add_argument("root")
