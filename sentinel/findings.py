@@ -219,6 +219,21 @@ _reg(CheckSpec("S-332", "Source-vs-output level agreement", "L3", S.WARN, ("F21"
                "Median level divergence between the source reference render and the "
                "produced IAMF beyond tolerance — re-render/fold level shift (headroom "
                "risk class)."))
+_reg(CheckSpec("S-333", "ADM conversion: each track's level preserved", "L3", S.FAIL, (),
+               "A static bed channel or object of the source ADM arrives in the "
+               "produced IAMF at a level other than its block gain x object gain, read "
+               "per track from the LPCM the converter wrote (least squares against the "
+               "source's own tracks; ACN 0 for a scene element). Calibrated to BS.2127, "
+               "which has no distance-to-level term: iamf-tools' importer attenuates by "
+               "1/max(|p|, 0.5), so a room-centric 5.1 bed's corners arrive 3.01 dB "
+               "down and a panned LFE 4.77 dB down (IA-0057, IA-0076)."))
+_reg(CheckSpec("S-334", "ADM conversion: each track's direction preserved", "L3", S.FAIL, (),
+               "A static bed channel or object of the source ADM arrives in a scene "
+               "element away from its authored direction: the polar position as "
+               "authored, a Cartesian one through BS.2127-0 §10.1.2 point_cart_to_polar "
+               "(the cube corner (1, 1, 0) is azimuth -30). Read from ACN 1-3 of the "
+               "track's contribution; iamf-tools' importer takes atan2 of the cube "
+               "coordinates instead (-45) (IA-0057, IA-0076)."))
 
 # Intent-conformance QC (B1 — needs the session's intent sidecar;
 # sentinel_pro.intent_compare). The sidecar is the authoring session's own

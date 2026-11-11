@@ -131,9 +131,10 @@ def _cmd_adm_compare(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 2
     tc = Toolchain.discover(args.toolchain) if args.toolchain else Toolchain.discover()
+    kw = {"conversion_only": True} if args.conversion_only else {}
     res = compare(args.source, args.output, layout=args.layout,
                   importance_threshold=args.importance_threshold,
-                  toolchain=tc, ear_bin=args.ear)
+                  toolchain=tc, ear_bin=args.ear, **kw)
     print(acr_json(res) if args.format == "json" else acr_text(res))
     return res.exit_code()
 
@@ -261,6 +262,10 @@ def build_parser() -> argparse.ArgumentParser:
     ac.add_argument("--importance-threshold", type=int, default=None,
                     help="threshold passed to the encoder; enables the S-331 check")
     ac.add_argument("--ear", help="path to ear-render (default: $SENTINEL_EAR or PATH)")
+    ac.add_argument("--conversion-only", action="store_true",
+                    help="only the per-track conversion checks (S-333 level, S-334 "
+                         "direction): they read the IAMF's LPCM directly and need "
+                         "neither ear-render nor the toolchain")
     ac.add_argument("--toolchain", help="toolchain root containing the reference decoders")
     ac.add_argument("--format", choices=["text", "json"], default="text")
     ac.set_defaults(func=_cmd_adm_compare)

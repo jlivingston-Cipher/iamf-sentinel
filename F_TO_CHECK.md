@@ -217,7 +217,10 @@ only one of the two families has failure modes to be traced to.
 
 **Source-referenced fidelity QC** — `sentinel adm-compare`; needs the source BW64/ADM
 master. F-anchored, so it appears in the rows above rather than here: `S-330` (F16, F18) ·
-`S-331` (F17) · `S-332` (F21).
+`S-331` (F17) · `S-332` (F21). Two per-track checks beside them have no F-anchor yet:
+`S-333` (each track's level, calibrated to BS.2127's no distance term) and `S-334` (each
+track's direction, BS.2127-0 §10.1.2 for Cartesian positions); they read the LPCM that
+iamf-tools' ADM import writes, so they need neither a renderer nor a decoder.
 
 **Intent-conformance QC** — `sentinel intent-compare`; needs the authoring session's
 **intent sidecar** beside the delivered ADM BW64. **No F-anchor, by construction.** The
