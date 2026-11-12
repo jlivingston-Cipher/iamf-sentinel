@@ -232,8 +232,9 @@ _reg(CheckSpec("S-333", "ADM conversion: each track's level preserved", "L3", S.
 _reg(CheckSpec("S-334", "ADM conversion: each track's direction preserved", "L3", S.FAIL, (),
                "A static bed channel or object of the source ADM arrives in a scene "
                "element away from its authored direction: the polar position as "
-               "authored, a Cartesian one through BS.2127-0 §10.1.2 point_cart_to_polar "
-               "(the cube corner (1, 1, 0) is azimuth -30). Read from ACN 1-3 of the "
+               "authored; a Cartesian one on either reading, BS.2127-0 §10.1.2 "
+               "point_cart_to_polar (the cube corner (1, 1, 0) is azimuth -30) or plain "
+               "trigonometry (-45), since BS.2127's own renderer takes each on some layouts. Read from ACN 1-3 of the "
                "track's contribution; iamf-tools' importer takes atan2 of the cube "
                "coordinates instead (-45) (IA-0057, IA-0076)."))
 
