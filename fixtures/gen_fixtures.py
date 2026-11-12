@@ -78,9 +78,10 @@ def write_sample_reports(outdir: str, sample_roots):
 
 if __name__ == "__main__":
     outdir = sys.argv[1] if len(sys.argv) > 1 else "corpus"
+    samples = os.environ.get("SENTINEL_SAMPLES") or "/tmp/sentinel_build"
     sample_roots = [
-        "/tmp/sentinel_build/wp1/wp1-samples",
-        "/tmp/sentinel_build/wp3/wp3-samples",
+        os.path.join(samples, "wp1", "wp1-samples"),
+        os.path.join(samples, "wp3", "wp3-samples"),
     ]
     v, c = write_corpus(outdir)
     rep, files = write_sample_reports(outdir, sample_roots)

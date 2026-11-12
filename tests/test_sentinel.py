@@ -25,10 +25,14 @@ from fixtures.mutate import run_suite, MUTATIONS                 # noqa: E402
 
 # Sample corpus roots (present in the WP1/WP3 artifact extraction; the f31
 # root carries the FFmpeg trim-carriage evidence files from f31-artifacts.zip).
+# $SENTINEL_SAMPLES names the directory holding them (the same variable
+# iamf-sentinel-pro and iamf-loom read), so they can live somewhere a restart
+# does not empty; unset, the historical /tmp/sentinel_build is used.
+_SAMPLES = os.environ.get("SENTINEL_SAMPLES") or "/tmp/sentinel_build"
 SAMPLE_ROOTS = [
-    "/tmp/sentinel_build/wp1/wp1-samples",
-    "/tmp/sentinel_build/wp3/wp3-samples",
-    "/tmp/sentinel_build/f31/f31-samples",
+    os.path.join(_SAMPLES, "wp1", "wp1-samples"),
+    os.path.join(_SAMPLES, "wp3", "wp3-samples"),
+    os.path.join(_SAMPLES, "f31", "f31-samples"),
 ]
 
 
@@ -37,7 +41,8 @@ def _sample(name):
         p = os.path.join(root, name)
         if os.path.exists(p):
             return p
-    pytest.skip(f"sample {name} not available")
+    pytest.skip(f"sample {name} not available under {_SAMPLES} "
+                "($SENTINEL_SAMPLES)")
 
 
 # --------------------------------------------------------------------- L1 parse
