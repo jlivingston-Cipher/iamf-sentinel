@@ -102,19 +102,28 @@ the **Dolby Atmos Music Master Delivery Specification v2022.07** and the **Dolby
 Profile v1.1** (its section 5 and section 7 BWF rules). Each rule gets one of four verdicts:
 **PASS**, **FAIL** (a MUST or "shall" broken), **WARN** (a SHOULD not met) or **UNDETERMINED**
 (the rule cannot be judged from this file by this release). The levels are the documents' own;
-no threshold is the tool's invention. Output is text, JSON, or a one-page HTML report to attach to
-a delivery; `--album` adds the album rules for masters that share a folder and `--gapless` the
-gapless-album rules. WAVE files without `axml`/`chna` met while walking a folder (a stereo master
-beside its Atmos one) are listed as skipped, not failed.
+two rows marked *advisory* are label QC practice rather than Dolby rules. Output is text, JSON,
+or a one-page HTML report to attach to a delivery; `--album` adds the album rules for masters
+that share a folder and `--gapless` the gapless-album rules. A stereo master named after its
+Atmos master (`song_stereo.wav` beside `song.wav`, or given with `--stereo FILE|DIR`) is used for
+the sync rules; other WAVE files without `axml`/`chna` met while walking a folder are listed as
+skipped, not failed.
 
 What it judges today, from the file's chunks and Dolby's `dbmd` block without reading the audio:
 container and completeness, PCM format, channel and object counts, bit depth, sample rate, the
 4 GB RF64 rule, `chna`, `JUNK`/`ds64` sizes, the `dbmd` block's presence, the 24 fps timecode, the
 first frame of action, the 5.1/5.1.x and 5.1-to-2.0 downmix settings and the headphone render
-modes; across an album, the headphone modes and (gapless) the downmix and trim settings. What it
-reports UNDETERMINED: loudness and true peak on the 5.1 loudness re-render, the LFE low-pass, sync
-against the stereo master, and the profile's XML rules. A master with undetermined rules is
-reported as "nothing failed", never as "passes".
+modes; across an album, the headphone modes and (gapless) the downmix and trim settings.
+
+With the Pro plugin installed it also reads the audio, once, and measures: the LFE low-pass
+(S-522, judged against a stated filter shape and drawn as a spectrum in the HTML report), silent
+and near-silent channels (S-524, advisory), whether a 96 kHz master holds anything a 48 kHz
+recording could not (S-525, advisory), and, given the stereo master, the offset and extra tail
+against it (S-523) and the gapless album's track boundaries (S-533). Without the plugin those
+rows are UNDETERMINED and say what they need. Still UNDETERMINED in every case: loudness and true
+peak on the 5.1 loudness re-render, and the profile's XML rules. The measured rows' thresholds
+that are not the specification's own numbers are provisional and named in each row. A master with
+undetermined rules is reported as "nothing failed", never as "passes".
 
 The `dbmd` settings are read with a third-party field map (MediaInfoLib's) that has not yet been
 confirmed on a master written by Dolby's own renderer; every row that rests on it says so. Built on
@@ -134,6 +143,8 @@ CI-frictionless; the decoder oracles, DSP, and their dependencies live behind th
   PCM-scrambled) that even L2 cannot see from the bitstream alone.
 - Platform **profile packs** (e.g. YouTube ingest) and the loudness-measurement calibration that keeps
   *correct* files from being flagged at tight tolerances.
+- The **ADM delivery measurements** `adm-check` uses when the plugin is installed: the LFE low-pass,
+  silent channels, a false 96 kHz, and sync against the stereo master (S-522..S-525, S-533).
 
 `sentinel validate --l3`, `diff --render`, and `batch --l3` activate automatically when the plugin is
 installed; without it they print a one-line "requires iamf-sentinel-pro" notice and the free checks

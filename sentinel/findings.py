@@ -357,6 +357,14 @@ _reg(CheckSpec("S-523", "In sync with the stereo master: no extra lead silence, 
                "ADM", S.FAIL,
                description="Dolby Atmos Music Master Delivery Specification v2022.07, "
                "synchronization (MUST)."))
+_reg(CheckSpec("S-524", "Every channel carries signal: none digitally silent or near-silent",
+               "ADM", S.WARN,
+               description="label delivery QC practice; not a rule of either Dolby document "
+               "(advisory). Measured by iamf-sentinel-pro."))
+_reg(CheckSpec("S-525", "A 96 kHz master holds content above 24 kHz (not an upsampled 48 kHz mix)",
+               "ADM", S.WARN,
+               description="label delivery QC practice; not a rule of either Dolby document "
+               "(advisory). Measured by iamf-sentinel-pro."))
 _reg(CheckSpec("S-530", "Headphone render modes match across the album",
                "ADM", S.WARN,
                description="Dolby Atmos Music Master Delivery Specification v2022.07, master "

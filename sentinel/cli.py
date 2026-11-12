@@ -8,7 +8,8 @@
     sentinel adm-compare ADM_WAV IAMF [--layout L]      # Pro: ADM master vs IAMF deliverable
     sentinel intent-compare SIDECAR ADM_WAV             # Pro: intent sidecar vs delivered ADM
     sentinel adm-info ADM_WAV [--format json|text]       # an ADM master's chunks + Dolby's dbmd
-    sentinel adm-check MASTER|DIR ... [--album] [--gapless] [--format text|json|html] [-o OUT]
+    sentinel adm-check MASTER|DIR ... [--album] [--gapless] [--stereo FILE|DIR]
+                       [--format text|json|html] [-o OUT]
                                                         # an ADM master against Dolby's delivery rules
 
 Exit codes: 0 pass · 1 findings at/above threshold · 2 execution error.
@@ -228,7 +229,8 @@ def _cmd_adm_info(args: argparse.Namespace) -> int:
 def _cmd_adm_check(args: argparse.Namespace) -> int:
     # Imported here for the same reason as adm-info: the inspector embeds cli.py.
     from .adm_check import run, render
-    res = run(args.paths, album=args.album, gapless=args.gapless, strict=args.strict)
+    res = run(args.paths, album=args.album, gapless=args.gapless, strict=args.strict,
+              stereo=args.stereo)
     out = render(res, args.format)
     if args.output:
         with open(args.output, "w", encoding="utf-8", newline="\n") as fh:
@@ -323,6 +325,10 @@ def build_parser() -> argparse.ArgumentParser:
     ak.add_argument("--format", choices=["text", "json", "html"], default="text")
     ak.add_argument("-o", "--output", help="write the report to a file instead of stdout")
     ak.add_argument("--strict", action="store_true", help="treat WARN as failing")
+    ak.add_argument("--stereo", metavar="FILE|DIR",
+                    help="the stereo master to check sync against (S-523, S-533): a file "
+                         "for one master, or a folder of them paired by name; without it "
+                         "<name>_stereo.wav beside a master is used (needs iamf-sentinel-pro)")
     ak.set_defaults(func=_cmd_adm_check)
 
     b = sub.add_parser("batch", help="validate every .iamf/.mp4 under a directory (roll-up)")

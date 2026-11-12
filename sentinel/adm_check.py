@@ -1,10 +1,12 @@
 """Judge an ADM BWF master against Dolby's published delivery rules.
 
-    sentinel adm-check MASTER|FOLDER ... [--album] [--gapless]
+    sentinel adm-check MASTER|FOLDER ... [--album] [--gapless] [--stereo FILE|DIR]
                        [--format text|json|html] [-o OUT] [--strict]
 
-Stdlib only, and it never reads the audio: everything here comes from the
-file's chunks (`sentinel.bwf`) and Dolby's metadata block (`sentinel.dbmd`).
+Stdlib only, and it never reads the audio itself: everything here comes from
+the file's chunks (`sentinel.bwf`) and Dolby's metadata block
+(`sentinel.dbmd`); the rows that need the audio are measured by the optional
+iamf-sentinel-pro plugin (below).
 Each rule of two public Dolby documents gets one row and one of four
 verdicts:
 
@@ -27,10 +29,15 @@ no threshold here is this tool's invention. The documents:
     are not judged by this release.
 
 Rows S-511..S-515 read Dolby's metadata block with a third-party field map
-(see `sentinel.dbmd.BASIS`); their verdicts carry that caveat. Rows S-520..
-S-523 and the album's S-533/S-534 need a measurement or a second file and
-are reported UNDETERMINED until those checks exist. A PASS here is not
-Dolby certification, and this tool is not affiliated with Dolby.
+(see `sentinel.dbmd.BASIS`); their verdicts carry that caveat. Rows S-522..
+S-525 and the album's S-533 are measured from the audio by the optional
+iamf-sentinel-pro plugin (`sentinel_pro.adm_delivery`), and S-523/S-533 also
+need the stereo master (`--stereo`, or `<name>_stereo.wav` beside the
+master); without them those rows are UNDETERMINED and say what they need.
+S-520/S-521/S-534 (loudness and true peak) are not measured yet. S-524 and
+S-525 are label QC practice, not rules of either Dolby document, and are
+marked "advisory". A PASS here is not Dolby certification, and this tool is
+not affiliated with Dolby.
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -135,6 +143,12 @@ _rule("S-522", "SHOULD",
 _rule("S-523", "MUST", f"{DELIVERY}, synchronization",
       "Check against the stereo master: start sample-aligned, end within one frame "
       "(2,000 samples at 48 kHz).")
+_rule("S-524", "advisory", "label delivery QC practice; not a rule of either Dolby document",
+      "Confirm each silent channel is meant to be silent (labels ask for approval), "
+      "or remove the unused object.")
+_rule("S-525", "advisory", "label delivery QC practice; not a rule of either Dolby document",
+      "Deliver a 48 kHz master, or a 96 kHz one only from a 96 kHz production; "
+      "an upsampled 48 kHz mix is not a 96 kHz master.")
 # -- the album --------------------------------------------------------------
 _rule("S-530", "SHOULD",
       f"{DELIVERY}, master",
@@ -152,9 +166,23 @@ _rule("S-534", "SHOULD",
       f"{DELIVERY}, loudness",
       "Measure each track's 5.1 loudness re-render.")
 
-MEASURED = ("S-520", "S-521", "S-522", "S-523")
+MEASURED = ("S-520", "S-521", "S-522", "S-523", "S-524", "S-525")
 NOT_MEASURED_WHY = ("needs a measurement of the audio; this release reads the "
                     "file's metadata only")
+NEEDS_PRO = ("needs a measurement of the audio: install iamf-sentinel-pro "
+             "(pip install 'iamf-sentinel-pro[numpy]')")
+NEEDS_STEREO = ("needs the stereo master: --stereo, or <name>_stereo.wav "
+                "beside this one")
+STEREO_SUFFIXES = ("_stereo", "-stereo", " stereo", ".stereo")
+
+
+def _measure_plugin():
+    """sentinel_pro.adm_delivery when installed (API 1 or later), else None."""
+    try:
+        from sentinel_pro import adm_delivery          # type: ignore[import-not-found]
+    except Exception:                                  # absent, or numpy missing
+        return None
+    return adm_delivery if getattr(adm_delivery, "API", 0) >= 1 else None
 
 
 @dataclass
@@ -165,6 +193,7 @@ class Row:
     reference: str
     notes: list[str] = field(default_factory=list)
     basis: str = ""             # set when the reading rests on the dbmd field map
+    plot: str = ""              # an inline SVG the measurement drew (HTML report only)
 
     def to_dict(self) -> dict[str, Any]:
         r = RULES[self.id]
@@ -177,6 +206,8 @@ class Row:
             d["notes"] = list(self.notes)
         if self.basis:
             d["basis"] = self.basis
+        if self.plot:
+            d["plot"] = self.plot
         return d
 
 
@@ -237,8 +268,9 @@ def _mode_counts(modes: list[dict[str, Any]]) -> str:
     return ", ".join(f"{n} x{c[n]}" for n in names if c.get(n))
 
 
-def check_master(path: str) -> dict[str, Any]:
-    """Every master rule (S-501..S-523) for one file, as a dict."""
+def check_master(path: str, stereo: str | None = None) -> dict[str, Any]:
+    """Every master rule (S-501..S-525) for one file, as a dict. `stereo` is
+    the stereo master S-523 is judged against."""
     info = adm_info(path)
     rows: list[Row] = []
     facts: dict[str, Any] = {}
@@ -441,12 +473,9 @@ def check_master(path: str) -> dict[str, Any]:
     rows.append(Row("S-516", UNDET, f"axml {(_chunk(info, 'axml') or {}).get('size', 0)} bytes, "
                     "not judged", "the profile's XML rules (sections 2-4)"))
 
-    for rid, ref in (("S-520", "at most -18.0 LKFS"), ("S-521", "at most -1.0 dBTP"),
-                     ("S-522", "cut-off 100-150 Hz"),
-                     ("S-523", "no extra lead silence; tail < 1 frame")):
-        why2 = (NOT_MEASURED_WHY if rid != "S-523" else
-                "needs the stereo master beside this one")
-        rows.append(Row(rid, UNDET, "not measured", ref, [why2]))
+    for rid, ref in (("S-520", "at most -18.0 LKFS"), ("S-521", "at most -1.0 dBTP")):
+        rows.append(Row(rid, UNDET, "not measured", ref, [NOT_MEASURED_WHY]))
+    rows += _measured_rows(path, info, stereo, facts)
 
     if caveat:
         notes.append("S-511..S-515 read Dolby's block: " + caveat)
@@ -462,6 +491,48 @@ def check_master(path: str) -> dict[str, Any]:
                           f"{a.get('contentCreationToolVersion', '')}".strip() if a else None),
         }
     return _result(path, info, rows, facts, notes, readable=True)
+
+
+_MEASURED_REFS = {"S-522": "cut-off 100-150 Hz",
+                  "S-523": "no extra lead silence; tail < 1 frame",
+                  "S-524": "every channel carries signal",
+                  "S-525": "a 96 kHz master holds content above 24 kHz"}
+
+
+def _measured_rows(path: str, info: dict[str, Any], stereo: str | None,
+                   facts: dict[str, Any]) -> list[Row]:
+    """S-522..S-525 from iamf-sentinel-pro's measurement when it is installed;
+    otherwise UNDETERMINED, each saying what it needs."""
+    plugin = _measure_plugin()
+    if plugin is None:
+        return [Row(rid, UNDET, "not measured", ref,
+                    [NEEDS_STEREO if rid == "S-523" and stereo is None else NEEDS_PRO])
+                for rid, ref in _MEASURED_REFS.items()]
+    try:
+        got = plugin.measure_master(path, info, stereo=stereo)
+    except Exception as e:                             # noqa: BLE001 -- reported, never fatal
+        why = f"the measurement did not complete: {type(e).__name__}: {e}"
+        return [Row(rid, UNDET, "not measured", ref, [why]) for rid, ref in _MEASURED_REFS.items()]
+    out: list[Row] = []
+    for d in got.get("rows", []):
+        if d.get("id") not in _MEASURED_REFS or d.get("verdict") not in _RANK:
+            continue
+        out.append(Row(d["id"], d["verdict"], str(d.get("measured", "")),
+                       str(d.get("reference", "")), [str(n) for n in d.get("notes", [])],
+                       plot=str(d.get("plot", ""))))
+    have = {r.id for r in out}
+    if "S-523" not in have:
+        out.append(Row("S-523", UNDET, "not measured", _MEASURED_REFS["S-523"],
+                       [NEEDS_STEREO]))
+        have.add("S-523")
+    for rid, ref in _MEASURED_REFS.items():
+        if rid not in have:
+            out.append(Row(rid, UNDET, "not measured", ref, ["the plugin did not report it"]))
+    data = got.get("data") or {}
+    facts["measured"] = {k: data[k] for k in ("lfeTracks", "lfe", "sync") if k in data}
+    if stereo is not None:
+        facts["stereo"] = stereo
+    return out
 
 
 def _result(path, info, rows, facts, notes, *, readable):
@@ -529,8 +600,7 @@ def check_album(name: str, masters: list[dict[str, Any]], gapless: bool) -> dict
             rows.append(Row("S-532", PASS if len(set(pairs)) == 1 else WARN,
                             f"{len(set(pairs))} distinct combination(s) over {len(pairs)} tracks",
                             "identical on every track"))
-        rows.append(Row("S-533", UNDET, "not measured", "within 1,000 samples at 48 kHz",
-                        ["needs the stereo album beside these masters"]))
+        rows.append(_gapless_row(usable))
     rows.append(Row("S-534", UNDET, "not measured", "at most -18.0 LKFS",
                     [NOT_MEASURED_WHY]))
     counts = _counts(rows)
@@ -539,9 +609,36 @@ def check_album(name: str, masters: list[dict[str, Any]], gapless: bool) -> dict
             "rows": [r.to_dict() for r in rows]}
 
 
+def _gapless_row(usable: list[dict[str, Any]]) -> Row:
+    """S-533 from each track's S-523 measurement (album order = file name order)."""
+    ref = "within 1,000 samples at 48 kHz"
+    plugin = _measure_plugin()
+    syncs = [(m["facts"].get("measured") or {}).get("sync") for m in usable]
+    if plugin is None or not hasattr(plugin, "gapless_boundaries"):
+        return Row("S-533", UNDET, "not measured", ref, [NEEDS_PRO])
+    if any(x is None for x in syncs):
+        return Row("S-533", UNDET, f"measured on {sum(x is not None for x in syncs)} of "
+                   f"{len(syncs)} tracks", ref, ["each track needs its stereo master"])
+    d = plugin.gapless_boundaries(syncs, [os.path.basename(m["path"]) for m in usable])
+    return Row("S-533", d["verdict"], d["measured"], d.get("reference", ref),
+               [str(n) for n in d.get("notes", [])])
+
+
 # ------------------------------------------------------------ files, folders
 def _is_master_name(name: str) -> bool:
     return name.lower().endswith(MASTER_EXTS) and not name.startswith("._")
+
+
+def stereo_for(master: str, candidates: list[str]) -> str | None:
+    """The stereo master paired with `master`: a file among `candidates` whose
+    name is the master's own with _stereo/-stereo/" stereo"/.stereo added,
+    or, given exactly one candidate that is a file, that file."""
+    stem = os.path.splitext(os.path.basename(master))[0].lower()
+    for c in candidates:
+        cs = os.path.splitext(os.path.basename(c))[0].lower()
+        if any(cs == stem + sfx for sfx in STEREO_SUFFIXES):
+            return c
+    return None
 
 
 def collect(paths: list[str]) -> tuple[list[str], list[str], list[str]]:
@@ -571,16 +668,42 @@ def collect(paths: list[str]) -> tuple[list[str], list[str], list[str]]:
 
 
 def run(paths: list[str], *, album: bool = False, gapless: bool = False,
-        strict: bool = False) -> dict[str, Any]:
+        strict: bool = False, stereo: str | None = None) -> dict[str, Any]:
+    """`stereo`: a stereo master (for a single ADM master) or a folder of them
+    (paired by name); without it, a `<name>_stereo.wav` beside a master that
+    is not itself ADM is used."""
     files, skipped, missing = collect(paths)
     masters = []
     errors = [f"{p}: no such file or folder" for p in missing]
     if not files and not missing:
         errors.append("no ADM master (a WAVE file with axml and chna) found in "
                       + ", ".join(paths))
+    pool: list[str] = []
+    if stereo is not None:
+        if os.path.isdir(stereo):
+            pool = [os.path.join(stereo, n) for n in sorted(os.listdir(stereo))
+                    if _is_master_name(n)]
+        elif os.path.isfile(stereo):
+            pool = [stereo]
+        else:
+            errors.append(f"{stereo}: no such stereo master or folder")
+    pairs: dict[str, str] = {}
+    beside: dict[str, list[str]] = {}
+    for f in files:
+        d = os.path.dirname(f) or "."
+        if d not in beside:
+            beside[d] = [os.path.join(os.path.dirname(f), n) for n in sorted(os.listdir(d))
+                         if _is_master_name(n)]
+        s = stereo_for(f, pool) or stereo_for(f, beside[d])
+        if s is None and len(files) == 1 and len(pool) == 1 and not os.path.isdir(stereo or ""):
+            s = pool[0]
+        if s is not None:
+            pairs[f] = s
+    used = set(pairs.values())
+    skipped = [p for p in skipped if p not in used]
     for f in files:
         try:
-            masters.append(check_master(f))
+            masters.append(check_master(f, stereo=pairs.get(f)))
         except OSError as e:
             errors.append(f"{f}: {e}")
     albums = []
@@ -603,6 +726,7 @@ def run(paths: list[str], *, album: bool = False, gapless: bool = False,
             totals[k] += v
     return {"tool": "sentinel adm-check", "specifications": [DELIVERY, PROFILE],
             "masters": masters, "albums": albums, "skipped": skipped, "errors": errors,
+            "stereoPairs": pairs,
             "totals": totals, "strict": strict, "exit_code": exit_code,
             "disclaimer": ("Built on Dolby's public specifications; not affiliated with "
                            "or endorsed by Dolby Laboratories. A PASS is not Dolby "
@@ -699,6 +823,17 @@ text-transform:uppercase;letter-spacing:.04em;color:#57606a}
 """
 
 
+def _safe_svg(svg: str) -> bool:
+    """Embed a measurement's plot only if it is a bare SVG with no script,
+    link or event handler (the plugin draws numbers only; this checks it)."""
+    if not svg or not svg.startswith("<svg ") or not svg.endswith("</svg>"):
+        return False
+    low = svg.lower()
+    if re.search(r"\son[a-z]+\s*=", low):
+        return False
+    return not any(t in low for t in ("<script", "javascript:", "href", "<foreignobject"))
+
+
 def render_html(res: dict[str, Any]) -> str:
     e = html.escape
     out = ["<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
@@ -719,6 +854,8 @@ def render_html(res: dict[str, Any]) -> str:
                      f"<div class=\"note\">{e(r['level'])} · {e(r['source'])}</div></td>"
                      f"<td>{e(r['measured'])}{notes}</td><td>{e(r['reference'])}</td>"
                      + (f"<td>{fix}</td>" if fixing else "") + "</tr>")
+            if _safe_svg(r.get("plot", "")):
+                b.append(f"<tr><td></td><td colspan=\"{4 if fixing else 3}\">{r['plot']}</td></tr>")
         b.append("</table>")
         return "".join(b)
 

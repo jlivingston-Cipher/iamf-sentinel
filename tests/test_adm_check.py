@@ -26,6 +26,13 @@ BED_712 = ["0001"] * 10
 SEEN: set[str] = set()
 
 
+@pytest.fixture(autouse=True)
+def _no_plugin(monkeypatch):
+    """The core's own behaviour: no measurement plugin, whatever is installed.
+    Tests of the plugin seam install a fake one (below)."""
+    monkeypatch.setattr(A, "_measure_plugin", lambda: None)
+
+
 def _dbmd(binaural=None, n=14, **kw9):
     binaural = [1] * n if binaural is None else binaural
     seg10_kw = {k: kw9.pop(k) for k in ("trims",) if k in kw9}
@@ -61,15 +68,17 @@ def test_clean_master_has_nothing_failed_and_says_what_was_not_judged(tmp_path):
     rs, res = rows(p)
     assert {r["verdict"] for r in rs.values()} == {"PASS", "UNDETERMINED"}
     assert sorted(k for k, r in rs.items() if r["verdict"] == "UNDETERMINED") == [
-        "S-516", "S-520", "S-521", "S-522", "S-523"]
+        "S-516", "S-520", "S-521", "S-522", "S-523", "S-524", "S-525"]
     assert res["verdict"] == "PASS" and res["complete"] is False
     assert res["facts"]["bedChannels"] == 10 and res["facts"]["objects"] == 4
     line = A._verdict_line(res)
-    assert line.startswith("NOTHING FAILED; 5 RULE(S) NOT DETERMINED")
+    assert line.startswith("NOTHING FAILED; 7 RULE(S) NOT DETERMINED")
     assert "PASSES" not in line                      # undetermined is never a pass
     for rid in ("S-511", "S-512", "S-513", "S-514", "S-515"):
         assert "not yet confirmed" in rs[rid]["basis"]
     assert "remedy" not in rs["S-501"] and "remedy" in rs["S-520"]
+    assert "iamf-sentinel-pro" in rs["S-522"]["notes"][0]       # says what it needs
+    assert "stereo master" in rs["S-523"]["notes"][0]
 
 
 # ------------------------------------------------------------ container rules
@@ -264,6 +273,7 @@ def test_gapless_rules(tmp_path):
     rs = _album_rows(A.run([ok], gapless=True))
     assert [rs[k]["verdict"] for k in ("S-531", "S-532", "S-533", "S-534")] == [
         "PASS", "PASS", "UNDETERMINED", "UNDETERMINED"]
+    assert "iamf-sentinel-pro" in rs["S-533"]["notes"][0]
     bad = _album(tmp_path / "y", [{}, {"downmix5to2": 2}])
     res = A.run([bad], gapless=True)
     rs = _album_rows(res)
@@ -289,12 +299,13 @@ def test_folder_walk_skips_non_adm_wave_and_lists_it(tmp_path):
     d = tmp_path / "cat"
     (d / "a").mkdir(parents=True)
     master(d / "a", "song.wav")
-    stereo = d / "a" / "song_stereo.wav"
+    stereo = d / "a" / "other.wav"          # not named after a master: skipped, not paired
     stereo.write_bytes(B.adm_wav(channels=2, drop=(b"axml", b"chna")))
     (d / "a" / "notes.txt").write_text("x", encoding="utf-8")
     res = A.run([str(d)])
     assert [os.path.basename(m["path"]) for m in res["masters"]] == ["song.wav"]
     assert res["skipped"] == [str(stereo)] and res["exit_code"] == 0
+    assert res["stereoPairs"] == {}
 
 
 def test_named_non_adm_file_is_judged_not_skipped(tmp_path):
@@ -333,13 +344,135 @@ def test_cli_json_text_html_and_strict(tmp_path, capsys):
     assert "not affiliated" in page and "S-520" in page
 
 
+# ------------------------------------------------- the measurement plugin seam
+
+class FakePlugin:
+    """Stands in for sentinel_pro.adm_delivery: records its calls and returns
+    what a test asks for."""
+    API = 1
+
+    def __init__(self, rows=None, boom=None, gapless=None):
+        self.calls, self.rows, self.boom, self.gapless = [], rows or {}, boom, gapless
+
+    def measure_master(self, path, info, stereo=None):
+        self.calls.append((os.path.basename(path), stereo and os.path.basename(stereo)))
+        if self.boom:
+            raise self.boom
+        out = [dict(id=k, reference="ref", notes=["n"], **v) for k, v in self.rows.items()
+               if k != "S-523" or stereo is not None]
+        data = {"lfeTracks": [4]}
+        if stereo is not None:
+            data["sync"] = {"offsetSamples": 0, "extraTailSamples": 0, "frameSamples": 2000}
+        return {"rows": out, "data": data}
+
+    def gapless_boundaries(self, syncs, names):
+        return self.gapless or {"verdict": "PASS", "measured": f"{len(syncs)} tracks",
+                                "reference": "half a frame", "notes": []}
+
+
+SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"><polyline points="0,0"/></svg>'
+ROWS = {"S-522": {"verdict": "WARN", "measured": "worst +7.0 dB", "plot": SVG},
+        "S-524": {"verdict": "PASS", "measured": "all carry signal"},
+        "S-525": {"verdict": "PASS", "measured": "48 kHz: not applicable"},
+        "S-523": {"verdict": "FAIL", "measured": "offset +480 samples"}}
+
+
+def _plug(monkeypatch, **kw):
+    fake = FakePlugin(**kw)
+    monkeypatch.setattr(A, "_measure_plugin", lambda: fake)
+    return fake
+
+
+def _stereo(path):
+    path.write_bytes(B.adm_wav(channels=2, drop=(b"axml", b"chna")))
+    return str(path)
+
+
+def test_plugin_rows_fill_the_measured_rules(tmp_path, monkeypatch):
+    fake = _plug(monkeypatch, rows=ROWS)
+    p = master(tmp_path)
+    rs, res = rows(p)
+    assert {k: rs[k]["verdict"] for k in ("S-522", "S-524", "S-525", "S-523")} == {
+        "S-522": "WARN", "S-524": "PASS", "S-525": "PASS", "S-523": "UNDETERMINED"}
+    assert "stereo master" in rs["S-523"]["notes"][0]   # no stereo: not asked of the plugin
+    assert rs["S-522"]["plot"] == SVG and fake.calls == [("m.wav", None)]
+    assert res["facts"]["measured"]["lfeTracks"] == [4]
+
+
+def test_a_stereo_beside_the_master_is_paired_and_not_skipped(tmp_path, monkeypatch):
+    fake = _plug(monkeypatch, rows=ROWS)
+    master(tmp_path, "song.wav")
+    st = _stereo(tmp_path / "Song_Stereo.wav")
+    res = A.run([str(tmp_path)])
+    assert res["stereoPairs"] == {str(tmp_path / "song.wav"): st} and res["skipped"] == []
+    assert fake.calls == [("song.wav", "Song_Stereo.wav")]
+    r = {x["id"]: x for x in res["masters"][0]["rows"]}
+    assert r["S-523"]["verdict"] == "FAIL" and res["exit_code"] == 1
+
+
+def test_stereo_option_file_and_folder(tmp_path, monkeypatch):
+    fake = _plug(monkeypatch, rows=ROWS)
+    one = master(tmp_path, "a.wav")
+    st = _stereo(tmp_path / "anything.wav")
+    A.run([one], stereo=st)                      # a file, one master: used as is
+    sd = tmp_path / "st"
+    sd.mkdir()
+    _stereo(sd / "a-stereo.wav")
+    _stereo(sd / "unrelated.wav")
+    A.run([one], stereo=str(sd))                 # a folder: paired by name
+    assert fake.calls == [("a.wav", "anything.wav"), ("a.wav", "a-stereo.wav")]
+    assert "no such stereo" in A.run([one], stereo=str(tmp_path / "nope"))["errors"][0]
+
+
+def test_without_the_plugin_a_paired_stereo_says_the_plugin_is_needed(tmp_path):
+    master(tmp_path, "song.wav")
+    _stereo(tmp_path / "song_stereo.wav")
+    r = {x["id"]: x for x in A.run([str(tmp_path)])["masters"][0]["rows"]}
+    assert r["S-523"]["verdict"] == "UNDETERMINED"
+    assert "iamf-sentinel-pro" in r["S-523"]["notes"][0]
+
+
+def test_a_failing_measurement_is_undetermined_never_fatal(tmp_path, monkeypatch):
+    _plug(monkeypatch, boom=ValueError("bad pcm"))
+    rs, res = rows(master(tmp_path))
+    for rid in ("S-522", "S-523", "S-524", "S-525"):
+        assert rs[rid]["verdict"] == "UNDETERMINED"
+        assert "ValueError: bad pcm" in rs[rid]["notes"][0]
+    assert res["readable"]
+
+
+def test_gapless_boundaries_come_from_each_tracks_sync(tmp_path, monkeypatch):
+    _plug(monkeypatch, rows=ROWS, gapless={"verdict": "FAIL", "measured": "1500 samples",
+                                           "notes": []})
+    d = tmp_path / "album"
+    d.mkdir()
+    for n in ("01", "02"):
+        master(d, f"{n}.wav")
+        _stereo(d / f"{n}_stereo.wav")
+    rs = _album_rows(A.run([str(d)], gapless=True))
+    assert rs["S-533"]["verdict"] == "FAIL" and rs["S-533"]["measured"] == "1500 samples"
+    os.remove(d / "02_stereo.wav")
+    rs = _album_rows(A.run([str(d)], gapless=True))
+    assert rs["S-533"]["verdict"] == "UNDETERMINED" and "1 of 2" in rs["S-533"]["measured"]
+
+
+def test_html_embeds_a_plot_only_when_it_is_a_bare_svg(tmp_path, monkeypatch):
+    _plug(monkeypatch, rows=ROWS)
+    page = A.render_html(A.run([master(tmp_path)]))
+    assert SVG in page
+    for bad in ('<svg onload="x()"></svg>', '<svg ><a href="https://e"/></svg>',
+                '<svg ><script>x</script></svg>', "<b>not svg</b>"):
+        assert not A._safe_svg(bad), bad
+    assert A._safe_svg(SVG)
+
+
 # --------------------------------------------------------------- the registry
 
 def test_rules_are_registered_with_their_documents_level():
     for rid, rule in A.RULES.items():
         spec = REGISTRY[rid]
         assert spec.layer == "ADM" and spec.title == rule.title
-        want = Severity.WARN if rule.level in ("SHOULD", "profile") else Severity.FAIL
+        want = Severity.WARN if rule.level in ("SHOULD", "profile", "advisory") else Severity.FAIL
         assert spec.default_severity == want, rid
         assert rule.source in spec.description
 
