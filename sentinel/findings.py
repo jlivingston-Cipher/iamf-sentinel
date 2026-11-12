@@ -8,6 +8,8 @@ Check-ID taxonomy is a stable public contract (tool vendors cite
                                    S-21x object and rendering configuration)
     S-3xx  loudness (descriptor)  (declared-loudness sanity; measured render = Phase 2)
     S-4xx  container / profile     (MP4 brands, fast-start, RFC6381)
+    S-5xx  ADM master delivery     (an ADM BWF master against Dolby's published
+                                    delivery rules; `sentinel adm-check`)
 
 Severity: FAIL (conformance violation) / WARN (risk or non-canonical) /
 INFO (observation). Profiles may override a check's severity.
@@ -277,6 +279,104 @@ _reg(CheckSpec("S-346", "Intent: sidecar and file describe the same program",
                "Sample rate, duration, bed layout, or scene order contradict "
                "the sidecar — the wrong-file guard. When it fires, the "
                "dependent intent checks are skipped."))
+
+# ADM master delivery (`sentinel adm-check`): an ADM BWF master judged against
+# Dolby's Music Master Delivery Specification v2022.07 and ADM Profile v1.1.
+# Severity is the documents' own level: MUST/shall -> FAIL, SHOULD -> WARN.
+# S-516, S-520..S-523, S-533 and S-534 report UNDETERMINED until measured.
+_reg(CheckSpec("S-501", "ADM BWF master: a complete WAVE file with axml and chna",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master; Dolby "
+               "Atmos Master ADM Profile v1.1 7 (MUST)."))
+_reg(CheckSpec("S-502", "Linear PCM (format tag 1)",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Master ADM Profile v1.1 7.1 (shall)."))
+_reg(CheckSpec("S-503", "At most 128 channels",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master; Dolby "
+               "Atmos Master ADM Profile v1.1 7.1 (MUST)."))
+_reg(CheckSpec("S-504", "Bed and object tracks only, at most 118 objects",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master; Dolby "
+               "Atmos Master ADM Profile v1.1 2.1.1, 2.4 (MUST)."))
+_reg(CheckSpec("S-505", "24-bit",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master; Dolby "
+               "Atmos Master ADM Profile v1.1 7.1 (MUST)."))
+_reg(CheckSpec("S-506", "48 kHz",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master (MUST)."))
+_reg(CheckSpec("S-507", "A master of 4 GB or more is RF64, never BW64",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Master ADM Profile v1.1 7.1 (shall)."))
+_reg(CheckSpec("S-508", "chna names every track once (numUID = numTrack = channels)",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Master ADM Profile v1.1 7.2 (shall)."))
+_reg(CheckSpec("S-509", "JUNK at most 64 bytes under 4 GB; ds64 at most 64 bytes at 4 GB or more",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Master ADM Profile v1.1 7.2 (shall)."))
+_reg(CheckSpec("S-510", "Dolby's metadata block (dbmd) present, with its Atmos segments",
+               "ADM", S.WARN,
+               description="Dolby Atmos Master ADM Profile v1.1 5 (profile)."))
+_reg(CheckSpec("S-511", "24 fps timecode",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, "
+               "synchronization (MUST)."))
+_reg(CheckSpec("S-512", "First frame of action unassigned",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, "
+               "synchronization (MUST)."))
+_reg(CheckSpec("S-513", "5.1 and 5.1.x downmix: Direct Render",
+               "ADM", S.WARN,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master "
+               "(SHOULD)."))
+_reg(CheckSpec("S-514", "5.1 to 2.0 downmix: Lo/Ro",
+               "ADM", S.WARN,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master "
+               "(SHOULD)."))
+_reg(CheckSpec("S-515", "Headphone (binaural) render mode set on every bed channel and object",
+               "ADM", S.WARN,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master "
+               "(SHOULD)."))
+_reg(CheckSpec("S-516", "ADM XML conforms to the profile's XML rules",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Master ADM Profile v1.1 2-4 (shall)."))
+_reg(CheckSpec("S-520", "Integrated loudness at most -18 LKFS on the 5.1 loudness re-render",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, loudness "
+               "(BS.1770-4, tolerance 0.1 LKFS) (MUST)."))
+_reg(CheckSpec("S-521", "True peak at most -1 dBTP on the loudness measurement",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, loudness "
+               "(tolerance 0.1 dB) (MUST)."))
+_reg(CheckSpec("S-522", "LFE low-passed, cut-off between 100 and 150 Hz",
+               "ADM", S.WARN,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master "
+               "(SHOULD)."))
+_reg(CheckSpec("S-523", "In sync with the stereo master: no extra lead silence, tail under one frame",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, "
+               "synchronization (MUST)."))
+_reg(CheckSpec("S-530", "Headphone render modes match across the album",
+               "ADM", S.WARN,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, master "
+               "(SHOULD)."))
+_reg(CheckSpec("S-531", "Gapless: the 5.1 to 2.0 downmix is the same on every track",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, gapless albums"
+               " (MUST)."))
+_reg(CheckSpec("S-532", "Gapless: the 5.1.x downmix and trims are the same on every track",
+               "ADM", S.WARN,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, gapless albums"
+               " (SHOULD)."))
+_reg(CheckSpec("S-533", "Gapless: track boundaries within half a frame of the stereo's",
+               "ADM", S.FAIL,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, gapless albums"
+               " (MUST)."))
+_reg(CheckSpec("S-534", "Album: the loudest track at most -18 LKFS",
+               "ADM", S.WARN,
+               description="Dolby Atmos Music Master Delivery Specification v2022.07, loudness "
+               "(SHOULD)."))
 
 # Container / profile
 _reg(CheckSpec("S-401", "IAMF brand present", "container", S.FAIL,

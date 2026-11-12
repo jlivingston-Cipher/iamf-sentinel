@@ -8,6 +8,8 @@
     sentinel adm-compare ADM_WAV IAMF [--layout L]      # Pro: ADM master vs IAMF deliverable
     sentinel intent-compare SIDECAR ADM_WAV             # Pro: intent sidecar vs delivered ADM
     sentinel adm-info ADM_WAV [--format json|text]       # an ADM master's chunks + Dolby's dbmd
+    sentinel adm-check MASTER|DIR ... [--album] [--gapless] [--format text|json|html] [-o OUT]
+                                                        # an ADM master against Dolby's delivery rules
 
 Exit codes: 0 pass · 1 findings at/above threshold · 2 execution error.
 """
@@ -223,6 +225,23 @@ def _cmd_adm_info(args: argparse.Namespace) -> int:
     return worst
 
 
+def _cmd_adm_check(args: argparse.Namespace) -> int:
+    # Imported here for the same reason as adm-info: the inspector embeds cli.py.
+    from .adm_check import run, render
+    res = run(args.paths, album=args.album, gapless=args.gapless, strict=args.strict)
+    out = render(res, args.format)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(out)
+        if args.format != "json":
+            print(f"wrote {args.format} report to {args.output}")
+    else:
+        print(out)
+    for e in res["errors"]:
+        print(f"error: {e}", file=sys.stderr)
+    return res["exit_code"]
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="sentinel", description="IAMF conformance & QC validator")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -289,6 +308,22 @@ def build_parser() -> argparse.ArgumentParser:
     ai.add_argument("files", nargs="+", help="ADM BWF masters (.wav)")
     ai.add_argument("--format", choices=["text", "json"], default="text")
     ai.set_defaults(func=_cmd_adm_info)
+
+    ak = sub.add_parser("adm-check",
+                        help="judge ADM BWF masters (files, folders, albums, a catalogue) "
+                             "against Dolby's Music Master Delivery Specification and ADM "
+                             "profile, rule by rule: PASS, FAIL, WARN or UNDETERMINED")
+    ak.add_argument("paths", nargs="+",
+                    help="ADM masters (.wav) or folders; a folder is searched for masters, "
+                         "and WAVE files with no axml/chna are listed as skipped")
+    ak.add_argument("--album", action="store_true",
+                    help="masters in the same folder are one album: adds the album rules")
+    ak.add_argument("--gapless", action="store_true",
+                    help="the albums are gapless: adds the gapless-album rules (implies --album)")
+    ak.add_argument("--format", choices=["text", "json", "html"], default="text")
+    ak.add_argument("-o", "--output", help="write the report to a file instead of stdout")
+    ak.add_argument("--strict", action="store_true", help="treat WARN as failing")
+    ak.set_defaults(func=_cmd_adm_check)
 
     b = sub.add_parser("batch", help="validate every .iamf/.mp4 under a directory (roll-up)")
     b.add_argument("root")

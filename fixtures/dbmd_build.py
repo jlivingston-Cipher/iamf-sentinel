@@ -80,28 +80,55 @@ def _chunk(cid: bytes, payload: bytes, size: int | None = None) -> bytes:
 
 def adm_wav(*, channels: int = 2, rate: int = 48000, bits: int = 24, frames: int = 480,
             dbmd_payload: bytes | None = None, container: bytes = b"RIFF",
-            chna_tracks: int | None = None) -> bytes:
-    """A minimal ADM-shaped WAVE: fmt, [dbmd], chna, axml (a stub), data."""
+            chna_tracks: int | None = None, types: list[str] | None = None,
+            junk: int | None = None, fmt_tag: int = 1, chna_uids: int | None = None,
+            ds64_riff: int | None = None, bext: bool = False,
+            drop: tuple[bytes, ...] = (), truncate: int = 0,
+            chna_reversed: bool = False) -> bytes:
+    """A minimal ADM-shaped WAVE: [JUNK], fmt, [bext], [dbmd], chna, axml (a stub), data.
+
+    `types` gives each chna track's ADM type (the yyyy of AT_yyyyxxxx_nn:
+    "0001" a bed channel, "0003" an object; default every track an object);
+    `chna_uids` writes a numUIDs that differs from numTracks; `ds64_riff`
+    declares a RIFF size in ds64 (a large one without writing the bytes);
+    `drop` leaves chunks out; `truncate` cuts that many bytes off the end;
+    `chna_reversed` lists the chna entries last track first (their track
+    indices unchanged), which BS.2076 allows.
+    """
     ba = channels * bits // 8
-    fmt = struct.pack("<HHIIHH", 1, channels, rate, rate * ba, ba, bits)
+    fmt = struct.pack("<HHIIHH", fmt_tag, channels, rate, rate * ba, ba, bits)
     nt = channels if chna_tracks is None else chna_tracks
-    chna = struct.pack("<HH", nt, nt)
-    for i in range(nt):
+    types = types if types is not None else ["0003"] * nt
+    nu = nt if chna_uids is None else chna_uids
+    chna = struct.pack("<HH", nt, nu)
+    for i in (reversed(range(nt)) if chna_reversed else range(nt)):
+        ty = types[i] if i < len(types) else "0003"
         chna += (struct.pack("<H", i + 1) + f"ATU_{i + 1:08X}".encode()
-                 + f"AT_{0x00031001 + i:08X}_01".encode() + f"AP_{0x00031001 + i:08X}".encode()
+                 + f"AT_{ty}{0x1001 + i:04X}_01".encode() + f"AP_{ty}{0x1001 + i:04X}".encode()
                  + b"\0")
     axml = b'<?xml version="1.0"?><ebuCoreMain><coreMetadata><format><audioFormatExtended version="ITU-R_BS.2076-2"/></format></coreMetadata></ebuCoreMain>'
     data = bytes(ba * frames)
-    body = _chunk(b"fmt ", fmt)
+    body = b""
+    if junk is not None and container == b"RIFF":
+        body += _chunk(b"JUNK", bytes(junk))
+    if b"fmt " not in drop:
+        body += _chunk(b"fmt ", fmt)
+    if bext:
+        body += _chunk(b"bext", bytes(602))
     if dbmd_payload is not None:
         body += _chunk(b"dbmd", dbmd_payload)
-    body += _chunk(b"chna", chna) + _chunk(b"axml", axml)
+    if b"chna" not in drop:
+        body += _chunk(b"chna", chna)
+    if b"axml" not in drop:
+        body += _chunk(b"axml", axml)
     if container == b"RIFF":
         body += _chunk(b"data", data)
-        return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WAVE" + body
+        out = b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WAVE" + body
+        return out[:len(out) - truncate] if truncate else out
     ds64 = struct.pack("<QQQI", 0, len(data), frames, 0)
     head = _chunk(b"ds64", ds64)
     body = head + body + b"data" + struct.pack("<I", 0xFFFFFFFF) + data
-    riff = 4 + len(body)
+    riff = 4 + len(body) if ds64_riff is None else ds64_riff
     body = _chunk(b"ds64", struct.pack("<QQQI", riff, len(data), frames, 0)) + body[len(head):]
-    return container + struct.pack("<I", 0xFFFFFFFF) + b"WAVE" + body
+    out = container + struct.pack("<I", 0xFFFFFFFF) + b"WAVE" + body
+    return out[:len(out) - truncate] if truncate else out

@@ -49,6 +49,8 @@ sentinel validate file.iamf --format json                 # CI: machine-readable
 sentinel batch ./deliverables                             # directory roll-up, worst-exit for CI
 sentinel diff a.iamf b.mp4                                 # descriptor-structure diff (remux proof)
 sentinel intent-compare sidecar.intent.json out.wav       # Pro: intent sidecar vs delivered ADM
+sentinel adm-info master.wav                              # an ADM master's chunks and Dolby's dbmd block
+sentinel adm-check ./masters --album --format html -o qc.html  # ADM masters against Dolby's delivery rules
 sentinel checks -v                                        # list the stable check registry
 ```
 
@@ -88,9 +90,36 @@ keeps the embedded core finding-identical to this package.
   IAMF brand / fast-start / sample-entry, ISO-BMFF `iacb` extraction so L1/L2 run on IAMF-in-MP4
   exactly as on raw `.iamf`.
 - **The CI contract.** Stable check-ID taxonomy (`S-1xx` structural / `S-2xx` semantic / `S-3xx`
-  loudness / `S-4xx` container), FAIL/WARN/INFO severities, `json | text | html` reports, and a
+  loudness / `S-4xx` container / `S-5xx` ADM master delivery), FAIL/WARN/INFO severities, `json | text | html` reports, and a
   declarative `generic` profile. **This is the surface you cite:** "passes iamf-sentinel `S-1xx…S-4xx`
   at v0.5.0." (This example is version-coupled: it moves with every release.)
+
+## ADM master delivery check (`sentinel adm-check`, `S-5xx`)
+
+Before an Atmos master is converted to IAMF, or delivered at all, `adm-check` judges an ADM BWF
+file, a folder, an album or a whole catalogue rule by rule against Dolby's two public documents:
+the **Dolby Atmos Music Master Delivery Specification v2022.07** and the **Dolby Atmos Master ADM
+Profile v1.1** (its section 5 and section 7 BWF rules). Each rule gets one of four verdicts:
+**PASS**, **FAIL** (a MUST or "shall" broken), **WARN** (a SHOULD not met) or **UNDETERMINED**
+(the rule cannot be judged from this file by this release). The levels are the documents' own;
+no threshold is the tool's invention. Output is text, JSON, or a one-page HTML report to attach to
+a delivery; `--album` adds the album rules for masters that share a folder and `--gapless` the
+gapless-album rules. WAVE files without `axml`/`chna` met while walking a folder (a stereo master
+beside its Atmos one) are listed as skipped, not failed.
+
+What it judges today, from the file's chunks and Dolby's `dbmd` block without reading the audio:
+container and completeness, PCM format, channel and object counts, bit depth, sample rate, the
+4 GB RF64 rule, `chna`, `JUNK`/`ds64` sizes, the `dbmd` block's presence, the 24 fps timecode, the
+first frame of action, the 5.1/5.1.x and 5.1-to-2.0 downmix settings and the headphone render
+modes; across an album, the headphone modes and (gapless) the downmix and trim settings. What it
+reports UNDETERMINED: loudness and true peak on the 5.1 loudness re-render, the LFE low-pass, sync
+against the stereo master, and the profile's XML rules. A master with undetermined rules is
+reported as "nothing failed", never as "passes".
+
+The `dbmd` settings are read with a third-party field map (MediaInfoLib's) that has not yet been
+confirmed on a master written by Dolby's own renderer; every row that rests on it says so. Built on
+Dolby's public specifications; not affiliated with or endorsed by Dolby Laboratories, and a PASS is
+not Dolby certification.
 
 ## What's in the Pro plugin (`iamf-sentinel-pro`) — also free, Apache-2.0
 
